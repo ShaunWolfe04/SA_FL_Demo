@@ -7,7 +7,7 @@ import scipy.integrate
 # Define trapz manually using trapezoid
 scipy.integrate.trapz = scipy.integrate.trapezoid
 
-
+import numpy as np
 from auton_survival.datasets import load_dataset
 from auton_survival.models import dsm
 import torch
@@ -15,45 +15,58 @@ from sklearn.utils import shuffle
 
 
 
-class DSMModel():
+class DSMModel(dsm.DSMBase):
 
-    def __init__(self, lr, inputdim, k, layers=None, dist='Weibull',
-               temp=1000., discount=1.0, optimizer='Adam',
-               risks=1):
-        self.model = dsm.dsm_torch.DeepSurvivalMachinesTorch(inputdim, k, layers=layers, dist=dist, 
-                                                            temp=temp, discount=discount, optimizer=optimizer, 
-                                                            risks=risks)
-
-        self.model.double() # Change to float64
-        self.optimizer = dsm.utilities.get_optimizer(self.model, lr)
-
-        self.patience = 0
-        self.oldcost = float('inf')
-
+    def __init__(self, inputdim, k, layers=None, dist='Weibull',
+               temp=1000., discount=1.0, random_seed=0
+               # optimizer='Adam', risks=1
+               ):
+        super().__init__( k, layers, dist, temp, discount, random_seed)
         
+        self.torch_model = None
+        self.lr = None
+        self.optimizer = None
 
-        self.dics = []
-        self.costs = []
-    def pretrain(self, t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor ):
+    def setup_model(self, t_tr, e_tr, t_val, e_val, inputdim=None, x_tr = None, lr=1e-3, optimizer='Adam', risks=1):
+        if inputdim is None:
+            assert x_tr is not None, "one of x_tr or inputdim must be provided"
+            inputdim = x_tr.shape[-1]
+        
+        self.torch_model = self._gen_torch_model(inputdim, optimizer, risks)
+        self.torch_model.double()
+
+        self._pretrain(t_tr, e_tr, t_val, e_val)
+
+        self.optimizer=optimizer
+        self._setup_optimizer(lr)
+
+    def _pretrain(self, t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor ):
         # pretrain to find a good starting point for parameters
         # adapted from auton_survival
-        premodel = dsm.utilities.pretrain_dsm(self.model, t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor)
-        for r in range(self.model.risks):
-            self.model.shape[str(r+1)].data.fill_(float(premodel.shape[str(r+1)]))
-            self.model.scale[str(r+1)].data.fill_(float(premodel.scale[str(r+1)]))
+        
+        premodel = dsm.utilities.pretrain_dsm(self.torch_model, t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor)
+        for r in range(self.torch_model.risks):
+            self.torch_model.shape[str(r+1)].data.fill_(float(premodel.shape[str(r+1)]))
+            self.torch_model.scale[str(r+1)].data.fill_(float(premodel.scale[str(r+1)]))
+    
+    def _setup_optimizer(self, lr):
+        # setup optimizer after pretraining and before training
+        self.optimizer = dsm.utilities.get_optimizer(self.torch_model, lr)
     
 
 def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elbo=True, bs=100, random_seed=0):
+    #TODO: Implement early stopping
     nbatches = int(x_tr.shape[0]/bs)+1
-    # validation step
-    # delete later
     
     
+    torch.manual_seed(model.random_seed)
+    np.random.seed(model.random_seed)
 
 
     for i in range(n_iter):
         x_tr, t_tr, e_tr = shuffle(x_tr, t_tr, e_tr, random_state=i)
         for j in range(nbatches):
+            
             xb=x_tr[j*bs:(j+1)*bs]
             tb=t_tr[j*bs:(j+1)*bs]
             eb=e_tr[j*bs:(j+1)*bs]
@@ -63,54 +76,66 @@ def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elb
             #resets the optimizer so it can run for this loop
             model.optimizer.zero_grad()
             loss=0
-            for r in range(model.model.risks):
-                loss += dsm.losses.conditional_loss(model.model,
+            for r in range(model.torch_model.risks):
+                # complex loss function of the dsm model needs to be outsourced
+                loss += dsm.losses.conditional_loss(model.torch_model,
                                                     xb,
-                                                    dsm.utilities._reshape_tensor_with_nans(tb),
-                                                    dsm.utilities._reshape_tensor_with_nans(eb),
+                                                    tb,
+                                                    eb,
                                                     elbo=elbo,
                                                     risk=str(r+1))
             # print ("Train Loss", float(loss))
             loss.backward()
+            
             model.optimizer.step()
 
-        # DEBUG
-        shape_tensor = model.shape['1'] if hasattr(model, 'shape') else model.model.shape['1']
-        
-        # We access the first element of the tensor with .data[0] before calling .item()
-        first_shape_value = shape_tensor.data[0].item()
-
-        print(f"DEBUG: Epoch {i}, Batch {j}, First val of Shape Param '1': {first_shape_value:.6f}")
 
         # validation step
         val_loss=0
-        for r in range(model.model.risks):
-            val_loss += dsm.losses.conditional_loss(model.model,
+        for r in range(model.torch_model.risks):
+            # elbo = False: used mostly for visualizing the loss, 
+            # or else it could appear to explode
+            val_loss += dsm.losses.conditional_loss(model.torch_model,
                                                 x_val,
-                                                dsm.utilities._reshape_tensor_with_nans(t_val),
-                                                dsm.utilities._reshape_tensor_with_nans(e_val),
+                                                t_val,
+                                                e_val,
                                                 elbo=False,
                                                 risk=str(r+1))
         print(f"Epoch {i+1}/{n_iter} | Val Loss: {val_loss.item():.4f}")
-        
+    model.fitted = True
     return model
 
 
 def test(model, x_te, t_te, e_te):
         # validation step
-    model.model.eval() # Set the model to evaluation mode (turns off dropout, etc.)
+    model.torch_model.eval() # Set the model to evaluation mode (turns off dropout, etc.)
     val_loss=0
     with torch.no_grad(): # Disable gradient calculations for speed and memory
-        for r in range(model.model.risks):
-            val_loss += dsm.losses.conditional_loss(model.model,
+        for r in range(model.torch_model.risks):
+            val_loss += dsm.losses.conditional_loss(model.torch_model,
                                                 x_te,
-                                                dsm.utilities._reshape_tensor_with_nans(t_te),
-                                                dsm.utilities._reshape_tensor_with_nans(e_te),
-                                                elbo=True,
+                                                t_te,
+                                                e_te,
+                                                elbo=False,
                                                 risk=str(r+1))
     print(f"Test Loss: {val_loss.item():.4f}")
-    
+
+#code from Gemini to inspect gradients
+#used for debugging
+def print_grad_stats(name):
+    """A helper function to create our hook."""
+    def hook(grad):
+        if grad is not None:
+            print(f"--- Gradients for '{name}' ---")
+            print(f"  - Shape: {grad.shape}")
+            print(f"  - Mean:  {grad.mean():.4e}") # e-notation for large/small numbers
+            print(f"  - Std:   {grad.std():.4e}")
+            print(f"  - Max:   {grad.max():.4e}")
+            print(f"  - Norm:  {grad.norm():.4e}") # The overall magnitude of the gradients
+    return hook
+
 #code from Gemini to view parameters
+#used for debugging
 def view_params(model):
     pytorch_model = model
 
@@ -134,6 +159,7 @@ def view_params(model):
         print("-" * 20)
 
 def main():
+    # --- Load the dataset --- #
     outcomes, features = load_dataset(dataset='SUPPORT')
 
     cat_feats = ['sex', 'dzgroup', 'dzclass', 'income', 'race', 'ca']
@@ -144,7 +170,7 @@ def main():
 
 
 
-    # Data preprocessing
+    # --- Preprocess data --- # 
 
     import numpy as np
     from sklearn.model_selection import train_test_split
@@ -168,6 +194,7 @@ def main():
 
     print(x_tr.head(5))
 
+    # --- Make data tensors in a stupid way probably --- #
     
     t_tr = y_tr['time'].values
     e_tr = y_tr['event'].values
@@ -188,7 +215,7 @@ def main():
     t_test_tensor = torch.tensor(t_te, dtype=torch.float64)
     e_test_tensor = torch.tensor(e_te, dtype=torch.float64)    
     
-    # --- 2. Instantiate and Train the DSM Model ---
+    # --- Instantiate and Train the DSM Model ---
     
     print("\n--- Step 2: Training the Deep Survival Machines model ---")
     #TODO
@@ -197,24 +224,76 @@ def main():
     # fit function can't be called since it is monolithic
     # must recreate fit function to run n epochs
     inputdim = x_tr.shape[-1]
-    print(f"inputdim: {inputdim}")
+    #print(f"inputdim: {inputdim}")
     #change these parameters to train the model
-    model = DSMModel(1e-3, inputdim, 3, layers=[100, 100], dist='Weibull', temp=1000., discount=1.0, optimizer='Adam', risks=1)
-    model.pretrain(t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor)
+    # view auton_survival.models.dsm.dsm_torch.py for more info
 
-    print("params before one run")
-    view_params(model.model)
+    
+    model = DSMModel( inputdim, 3, layers=[100, 100], dist='Weibull', temp=1., discount=1.0, random_seed=0)
+    model.setup_model(t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor, inputdim=inputdim, lr=1e-3, optimizer='Adam')
+    # DEBUG STUFF
+    """
+    print("\n--- DEBUG: YOUR CODE'S PRE-FLIGHT CHECK ---")
+    print("--- MODEL STATE ---")
+    print(model.model) # We print the inner torch model
+    print("\n--- OPTIMIZER STATE ---")
+    print(model.optimizer) # Print the optimizer from your wrapper
+    print("\n--- DATA TENSOR STATE ---")
+    print(f"x_train shape: {x_tr_tensor.shape}, dtype: {x_tr_tensor.dtype}")
+    print(f"x_train mean: {x_tr_tensor.mean():.4f}, std: {x_tr_tensor.std():.4f}")
+    print(f"t_train shape: {t_tr_tensor.shape}, dtype: {t_tr_tensor.dtype}")
+    print(f"t_train mean: {t_tr_tensor.mean():.4f}, std: {t_tr_tensor.std():.4f}")
+    print("\n--- DATA STATE ---")
+    x_np = x_tr_tensor.numpy()
+    pd.DataFrame(x_np).to_csv("data_dsm_no_fl.csv", index=False)
+    print("Saved to data_dsm_no_fl.csv")
+    print("--- END YOUR CODE'S CHECK ---\n")
+
+    """
+    # DEBUG STUFF 2
+    """
+    print("\n--- Attaching Gradient Hooks to Model Layers ---")
+
+    # We loop through all named layers in the underlying torch model
+    for name, layer in model.model.named_modules():
+        # We only care about the Linear layers where the weights are
+        if isinstance(layer, torch.nn.Linear):
+            # Register the hook on the .weight and .bias parameters of the layer
+            layer.weight.register_hook(print_grad_stats(f"{name}.weight"))
+            if layer.bias is not None:
+                layer.bias.register_hook(print_grad_stats(f"{name}.bias"))
+
+    print("Hooks attached. Starting training...\n")
+    """
+    #print("params before one run")
+    #view_params(model.model)
 
     train(model, x_tr_tensor, t_tr_tensor, e_tr_tensor, x_val_tensor, t_val_tensor, e_val_tensor, n_iter = 50)
-    print("params after one run")
-    view_params(model.model)
-    print("Worked? ")
+
+   
     
     test(model, x_test_tensor, t_test_tensor, e_test_tensor)
+    
+    times = np.quantile(y_tr['time'][y_tr['event']==1], np.linspace(0.1, 1, 10)).tolist()
 
-    exit()
-    model = dsm.utilities.pretrain_model()
-   
+    from auton_survival.estimators import _predict_dsm
+    from auton_survival.metrics import survival_regression_metric
+    predictions_te = _predict_dsm(model, x_te, times)
 
+    from sksurv.metrics import brier_score
+
+    results = dict()
+    results['Brier Score'] = survival_regression_metric('brs', outcomes=y_te, predictions=predictions_te, 
+                                                    times=times, outcomes_train=y_tr)
+
+    results['Concordance Index'] = survival_regression_metric('ctd', outcomes=y_te, predictions=predictions_te, 
+                                                    times=times, outcomes_train=y_tr)
+    # from auton_survival tutorial
+    from estimators_demo_utils import plot_performance_metrics
+    plot_performance_metrics(results, times)
+    # Results: pretrain creates a loss of roughly 4.7
+    # train creates a loss of roughly 4.5
+    # the pretrain absolutely carries
+    # the features here must not be highly correlated to survival
 if __name__ == '__main__':
     main()
