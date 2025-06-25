@@ -107,38 +107,58 @@ print(f"Type of x_train: {type(x_train)}")
 print(x_train[:3, :5].round(decimals=2))
 
 
-class DSMModel():
+class DSMModel(dsm.DSMBase):
 
-    def __init__(self, lr, inputdim, k, layers=None, dist='Weibull',
-               temp=1000., discount=1.0, optimizer='Adam',
-               risks=1):
-        self.model = dsm.dsm_torch.DeepSurvivalMachinesTorch(inputdim, k, layers=layers, dist=dist, 
-                                                            temp=temp, discount=discount, optimizer=optimizer, 
-                                                            risks=risks)
+    def __init__(self, inputdim, k, layers=None, dist='Weibull',
+               temp=1000., discount=1.0, random_seed=0
+               # optimizer='Adam', risks=1
+               ):
+        super().__init__( k, layers, dist, temp, discount, random_seed)
+        
+        self.torch_model = None
+        self.lr = None
+        self.optimizer = None
 
-        self.model.double() # Change to float64
-        self.optimizer = dsm.utilities.get_optimizer(self.model, lr)
+    def setup_model(self, t_tr, e_tr, t_val, e_val, inputdim=None, x_tr = None, lr=1e-3, optimizer='Adam', risks=1):
+        if inputdim is None:
+            assert x_tr is not None, "one of x_tr or inputdim must be provided"
+            inputdim = x_tr.shape[-1]
+        
+        self.torch_model = self._gen_torch_model(inputdim, optimizer, risks)
+        self.torch_model.double()
 
-    def pretrain(self, t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor ):
+        self._pretrain(t_tr, e_tr, t_val, e_val)
+
+        self.optimizer=optimizer
+        self._setup_optimizer(lr)
+
+    def _pretrain(self, t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor ):
         # pretrain to find a good starting point for parameters
         # adapted from auton_survival
-        premodel = dsm.utilities.pretrain_dsm(self.model, t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor)
-        for r in range(self.model.risks):
-            self.model.shape[str(r+1)].data.fill_(float(premodel.shape[str(r+1)]))
-            self.model.scale[str(r+1)].data.fill_(float(premodel.scale[str(r+1)]))
+        
+        premodel = dsm.utilities.pretrain_dsm(self.torch_model, t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor)
+        for r in range(self.torch_model.risks):
+            self.torch_model.shape[str(r+1)].data.fill_(float(premodel.shape[str(r+1)]))
+            self.torch_model.scale[str(r+1)].data.fill_(float(premodel.scale[str(r+1)]))
+    
+    def _setup_optimizer(self, lr):
+        # setup optimizer after pretraining and before training
+        self.optimizer = dsm.utilities.get_optimizer(self.torch_model, lr)
+    
 
-"""train function for DSM"""
 def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elbo=True, bs=100, random_seed=0):
+    #TODO: Implement early stopping
     nbatches = int(x_tr.shape[0]/bs)+1
-    # validation step
-    # delete later
     
     
+    torch.manual_seed(model.random_seed)
+    np.random.seed(model.random_seed)
 
 
     for i in range(n_iter):
         x_tr, t_tr, e_tr = shuffle(x_tr, t_tr, e_tr, random_state=i)
         for j in range(nbatches):
+            
             xb=x_tr[j*bs:(j+1)*bs]
             tb=t_tr[j*bs:(j+1)*bs]
             eb=e_tr[j*bs:(j+1)*bs]
@@ -148,44 +168,49 @@ def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elb
             #resets the optimizer so it can run for this loop
             model.optimizer.zero_grad()
             loss=0
-            for r in range(model.model.risks):
-                loss += dsm.losses.conditional_loss(model.model,
+            for r in range(model.torch_model.risks):
+                # complex loss function of the dsm model needs to be outsourced
+                loss += dsm.losses.conditional_loss(model.torch_model,
                                                     xb,
-                                                    dsm.utilities._reshape_tensor_with_nans(tb),
-                                                    dsm.utilities._reshape_tensor_with_nans(eb),
+                                                    tb,
+                                                    eb,
                                                     elbo=elbo,
                                                     risk=str(r+1))
             # print ("Train Loss", float(loss))
             loss.backward()
+            
             model.optimizer.step()
+
 
         # validation step
         val_loss=0
-        for r in range(model.model.risks):
-            val_loss += dsm.losses.conditional_loss(model.model,
+        for r in range(model.torch_model.risks):
+            # elbo = False: used mostly for visualizing the loss, 
+            # or else it could appear to explode
+            val_loss += dsm.losses.conditional_loss(model.torch_model,
                                                 x_val,
-                                                dsm.utilities._reshape_tensor_with_nans(t_val),
-                                                dsm.utilities._reshape_tensor_with_nans(e_val),
-                                                elbo=True,
+                                                t_val,
+                                                e_val,
+                                                elbo=False,
                                                 risk=str(r+1))
         print(f"Epoch {i+1}/{n_iter} | Val Loss: {val_loss.item():.4f}")
-        
+    model.fitted = True
     return model
 
 
 def test(model, x_te, t_te, e_te):
-    # validation step
-    model.model.eval() # Set the model to evaluation mode (turns off dropout, etc.)
+        # validation step
+    model.torch_model.eval() # Set the model to evaluation mode (turns off dropout, etc.)
     val_loss=0
     with torch.no_grad(): # Disable gradient calculations for speed and memory
-        for r in range(model.model.risks):
-            val_loss += dsm.losses.conditional_loss(model.model,
+        for r in range(model.torch_model.risks):
+            val_loss += dsm.losses.conditional_loss(model.torch_model,
                                                 x_te,
-                                                dsm.utilities._reshape_tensor_with_nans(t_te),
-                                                dsm.utilities._reshape_tensor_with_nans(e_te),
-                                                elbo=True,
+                                                t_te,
+                                                e_te,
+                                                elbo=False,
                                                 risk=str(r+1))
-    # print(f"Test Loss: {val_loss.item():.4f}")
+    print(f"Test Loss: {val_loss.item():.4f}")
     return val_loss
 
 
@@ -205,7 +230,7 @@ class FlowerClient(NumPyClient):
     def __init__(self, dsmbase: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val):
 
         self.dsm_model=dsmbase
-        self.model=self.dsm_model.model
+        
         self.x_tr = x_tr
         self.t_tr = t_tr
         self.e_tr = e_tr
@@ -213,8 +238,8 @@ class FlowerClient(NumPyClient):
         self.t_val = t_val
         self.e_val = e_val
 
-        self.dsm_model.pretrain(self.t_tr, self.e_tr, self.t_val, self.e_val)
-    
+        self.dsm_model.setup_model(self.t_tr, self.e_tr, self.t_val, self.e_val, x_tr=self.x_tr)
+        self.model=self.dsm_model.torch_model
     def get_parameters(self, config):
         return get_parameters(self.model)
     
@@ -233,13 +258,13 @@ def client_fn(context: Context) -> Client:
     """Create a Flower client representing a single organization."""
 
     # Load model
-
+    warnings.filterwarnings("ignore", message=".*np.find_common_type is deprecated.*")
 
     # Load data (SUPPORT)
     partition_id = context.node_config["partition-id"]
     x_tr, t_tr, e_tr, x_val, t_val, e_val = load_datasets(partition_id=partition_id)
     inputdim = x_tr.shape[-1]
-    net = DSMModel(1e-3, inputdim, 3, layers=[100, 100], dist='Weibull', temp=1000., discount=1.0, optimizer='Adam', risks=1)
+    net = DSMModel(inputdim, 3, layers=[100, 100], dist='Weibull', temp=1000., discount=1.0, random_seed=0)
 
     # Create a single Flower client representing a single organization
     # FlowerClient is a subclass of NumPyClient, so we need to call .to_client()
