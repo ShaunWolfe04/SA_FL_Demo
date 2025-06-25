@@ -9,11 +9,14 @@ Deep Survival Machines integrated into Flower \
 command to run: \
 `TQDM_DISABLE=1 python3 flower_dsm.py` (less noisy output)
 * Status
-    - Partition dataset: done
-    - Transform dataset: done globally, should be done differently
-    - Training loop: complete
-    - client / server loop: complete
+    - Complete with refactoring needed
 * Changelog
+    * 06/25/25
+        * Fixed noisy output with deprecation warnings and tqdm
+        * Refactored DSMModel to inherit from DSMBase
+* Future improvements:
+    * Implement better accuracy metrics
+    * Refactor to allow for benchmarking, and eventually clustering
 
 ### flower_template.py: 
 a template for implementing survival analysis in Flower. \
@@ -30,7 +33,7 @@ Need to do this since the functions in SurvivalModel are monolithic
 * Status
     * Complete with a couple small improvements needed
 * Changelog
-    * 06/25
+    * 06/25/25
         * Refactored DSMModel to inherit from DSMBase
         * Added accuracy metrics
         * Fixed bug with seemingly exploding gradients
