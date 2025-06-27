@@ -8,7 +8,7 @@
 import warnings
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*np.find_common_type is deprecated.*")
-
+    from typing import Callable, Optional, Union
     from collections import OrderedDict
     from typing import List, Tuple
 
@@ -18,17 +18,19 @@ with warnings.catch_warnings():
     import numpy as np
     import torch
     import torch.nn as nn
+    from flwr.server.client_proxy import ClientProxy
     import torch.nn.functional as F
     import torchvision.transforms as transforms
     from datasets.utils.logging import disable_progress_bar
     from torch.utils.data import DataLoader
     from sklearn.utils import shuffle
+    from copy import deepcopy
 
 
 
-    import flwr
+    import flwr as fl
     from flwr.client import Client, ClientApp, NumPyClient
-    from flwr.common import Metrics, Context
+    from flwr.common import Metrics, Context, Parameters, Scalar, FitRes
     from flwr.server import ServerApp, ServerConfig, ServerAppComponents
     from flwr.server.strategy import FedAvg
     from flwr.simulation import run_simulation
@@ -45,7 +47,7 @@ scipy.integrate.trapz = scipy.integrate.trapezoid
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Training on {DEVICE}")
-print(f"Flower {flwr.__version__} / PyTorch {torch.__version__}")
+print(f"Flower {fl.__version__} / PyTorch {torch.__version__}")
 disable_progress_bar()
 
 
@@ -67,8 +69,13 @@ preprocessor = Preprocessor(cat_feat_strat='ignore', num_feat_strat= 'mean')
 transformer = preprocessor.fit(features, cat_feats=cat_feats, num_feats=num_feats,
                                 one_hot=True, fill_value=-1)
 features = transformer.transform(features)
+from sklearn.model_selection import train_test_split
+x_tr, x_te, y_tr, y_te = train_test_split(features, outcomes, test_size=0.2, random_state=1)
 
-combined_df = pd.concat([features, outcomes], axis=1)
+combined_df = pd.concat([x_tr, y_tr], axis=1)
+combined_te = pd.concat([x_te, y_te], axis=1)
+
+
 # Need to convert this to a file to pass into FederatedDataset
 temp_csv_path = "support_dataset_temp.csv"
 combined_df.to_csv(temp_csv_path, index=False)
@@ -118,6 +125,7 @@ class DSMModel(dsm.DSMBase):
         self.torch_model = None
         self.lr = None
         self.optimizer = None
+        self.stop_training=False
 
     def setup_model(self, t_tr, e_tr, t_val, e_val, inputdim=None, x_tr = None, lr=1e-3, optimizer='Adam', risks=1):
         if inputdim is None:
@@ -148,8 +156,23 @@ class DSMModel(dsm.DSMBase):
 
 def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elbo=True, bs=100, random_seed=0):
     #TODO: Implement early stopping
+
+    if model.stop_training is True:
+        print("early stopping criterion met. Skipping train cycle...")
+        return model
+    else:
+        print("???")
     nbatches = int(x_tr.shape[0]/bs)+1
+    dics = []
+    costs = []
+    valid_loss = test(model, x_val, t_val, e_val)
     
+    valid_loss = valid_loss.detach().cpu().numpy()
+    costs.append(float(valid_loss))
+    dics.append(deepcopy(model.torch_model.state_dict()))  
+
+    patience = 0
+    oldcost = float('inf')
     
     torch.manual_seed(model.random_seed)
     np.random.seed(model.random_seed)
@@ -182,18 +205,35 @@ def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elb
             model.optimizer.step()
 
 
-        # validation step
-        val_loss=0
-        for r in range(model.torch_model.risks):
-            # elbo = False: used mostly for visualizing the loss, 
-            # or else it could appear to explode
-            val_loss += dsm.losses.conditional_loss(model.torch_model,
-                                                x_val,
-                                                t_val,
-                                                e_val,
-                                                elbo=False,
-                                                risk=str(r+1))
-        print(f"Epoch {i+1}/{n_iter} | Val Loss: {val_loss.item():.4f}")
+
+        valid_loss = test(model, x_val, t_val, e_val)
+        valid_loss = valid_loss.detach().cpu().numpy()
+        costs.append(float(valid_loss))
+        dics.append(deepcopy(model.torch_model.state_dict()))
+
+        # print(f"costs[-1]: {costs[-1]}, oldcost: {oldcost}")
+        if costs[-1] >= oldcost:
+            if patience == 2: # or n_iter
+                print("Model did not improve on this turn.")
+                minm = np.argmin(costs)
+                model.torch_model.load_state_dict(dics[minm])
+
+                del dics
+                model.fitted = True
+                model.stop_training = True
+                return model
+            else:
+                patience += 1
+        else:
+            patience = 0
+        oldcost = costs[-1]
+
+    minm = np.argmin(costs)
+    model.torch_model.load_state_dict(dics[minm])
+
+    del dics
+    
+
     model.fitted = True
     return model
 
@@ -210,20 +250,37 @@ def test(model, x_te, t_te, e_te):
                                                 e_te,
                                                 elbo=False,
                                                 risk=str(r+1))
-    print(f"Test Loss: {val_loss.item():.4f}")
+    #print(f"Test Loss: {val_loss.item():.4f}")
+    model.torch_model.train()
     return val_loss
 
 
 def set_parameters(net, parameters: List[np.ndarray]):
     params_dict = zip(net.state_dict().keys(), parameters)
-    state_dict = OrderedDict({k: torch.Tensor(v) for k, v in params_dict})
+    state_dict = OrderedDict({k: torch.tensor(v, dtype=torch.float64) for k, v in params_dict})
     net.load_state_dict(state_dict, strict=True)
 
 
 def get_parameters(net) -> List[np.ndarray]:
     return [val.cpu().numpy() for _, val in net.state_dict().items()]
 
+stateful_model = DSMModel(1, 1)
+client_models = []
+for i in range(NUM_CLIENTS):
+    print(f"Setting up model for client partition {i}...")
+    
+    # Load data for this client
+    x_tr, t_tr, e_tr, x_val, t_val, e_val = load_datasets(partition_id=i)
+    
+    # Create and pre-train the model object
+    input_dim = x_tr.shape[1]
+    dsm_model = DSMModel(input_dim, 3, layers=[100, 100], dist='Weibull', temp=1000., discount=1.0, random_seed=0)
+    dsm_model.setup_model(t_tr, e_tr, t_val, e_val, inputdim=input_dim, lr=1e-4, optimizer='Adam', risks=1)
+    client_models.append(dsm_model)
 
+    # Store the fully prepared, persistent model object
+    client_models.append(dsm_model)
+print("--- All client models are ready. ---\n")
 
 # Call load_datasets in client_fn
 class FlowerClient(NumPyClient):
@@ -238,14 +295,15 @@ class FlowerClient(NumPyClient):
         self.t_val = t_val
         self.e_val = e_val
 
-        self.dsm_model.setup_model(self.t_tr, self.e_tr, self.t_val, self.e_val, x_tr=self.x_tr)
+        
         self.model=self.dsm_model.torch_model
     def get_parameters(self, config):
         return get_parameters(self.model)
     
     def fit(self, parameters, config):
         set_parameters(self.model, parameters)
-        self.dsm_model = train(self.dsm_model, self.x_tr, self.t_tr, self.e_tr, self.x_val, self.t_val, self.e_val, n_iter=2, bs=16)
+        self.dsm_model = train(self.dsm_model, self.x_tr, self.t_tr, self.e_tr, self.x_val, self.t_val, self.e_val, n_iter=5, bs=16)
+        stateful_model=self.dsm_model
         return get_parameters(self.model), len(self.x_tr), {}
     
     def evaluate(self, parameters, config):
@@ -264,8 +322,7 @@ def client_fn(context: Context) -> Client:
     partition_id = context.node_config["partition-id"]
     x_tr, t_tr, e_tr, x_val, t_val, e_val = load_datasets(partition_id=partition_id)
     inputdim = x_tr.shape[-1]
-    net = DSMModel(inputdim, 3, layers=[100, 100], dist='Weibull', temp=1000., discount=1.0, random_seed=0)
-
+    net=client_models[partition_id]
     # Create a single Flower client representing a single organization
     # FlowerClient is a subclass of NumPyClient, so we need to call .to_client()
     # to convert it to a subclass of `flwr.client.Client`
@@ -276,10 +333,47 @@ def client_fn(context: Context) -> Client:
 # Create the ClientApp
 client = ClientApp(client_fn=client_fn)
 
+# Create a NEW strategy (inherits from FedAvg)
 
 
+class SaveModelStrategy(fl.server.strategy.FedAvg):
+    def aggregate_fit(
+        self,
+        server_round: int,
+        results: list[tuple[fl.server.client_proxy.ClientProxy, fl.common.FitRes]],
+        failures: list[Union[tuple[ClientProxy, FitRes], BaseException]],
+    ) -> tuple[Optional[Parameters], dict[str, Scalar]]:
+
+        # Call aggregate_fit from base class (FedAvg) to aggregate parameters and metrics
+        aggregated_parameters, aggregated_metrics = super().aggregate_fit(
+            server_round, results, failures
+        )
+
+        if aggregated_parameters is not None:
+            # Convert `Parameters` to `list[np.ndarray]`
+            aggregated_ndarrays: list[np.ndarray] = fl.common.parameters_to_ndarrays(
+                aggregated_parameters
+            )
+
+            # Save aggregated_ndarrays to disk
+            print(f"Saving round {server_round} aggregated_ndarrays...")
+            np.savez(f"round-{server_round}-weights.npz", *aggregated_ndarrays)
+
+        return aggregated_parameters, aggregated_metrics
+
+
+# Create strategy and pass into ServerApp
+def server_fn(context):
+    strategy = SaveModelStrategy(
+        # (same arguments as FedAvg here)
+    )
+    config = ServerConfig(num_rounds=3)
+    return ServerAppComponents(strategy=strategy, config=config)
+
+
+app = ServerApp(server_fn=server_fn)
 # Create FedAvg strategy
-strategy = FedAvg(
+strategy = SaveModelStrategy(
     fraction_fit=1.0,  # Sample 100% of available clients for training
     fraction_evaluate=0.5,  # Sample 50% of available clients for evaluation
     min_fit_clients=10,  # Never sample less than 10 clients for training
@@ -320,12 +414,41 @@ if DEVICE == "cuda":
 
 
 # Run simulation
-run_simulation(
+history = run_simulation(
     server_app=server,
     client_app=client,
     num_supernodes=NUM_CLIENTS, 
     backend_config=backend_config,
 )
+print("success")
+
+# here is where the code starts to be bad
+
+weights_filepath = "round-5-weights.npz"
+
+weights = np.load(weights_filepath)
+parameters_list = [weights[key] for key in weights.files]
+model = client_models[0]
+
+set_parameters(model.torch_model, parameters_list)
+print("params loaded back successfully")
+model.fitted=True
+times = np.quantile(y_tr['time'][y_tr['event']==1], np.linspace(0.1, 1, 10)).tolist()
+
+from auton_survival.estimators import _predict_dsm
+from auton_survival.metrics import survival_regression_metric
+predictions_te = _predict_dsm(model, x_te, times)
+
+
+results = dict()
+results['Brier Score'] = survival_regression_metric('brs', outcomes=y_te, predictions=predictions_te, 
+                                                times=times, outcomes_train=y_tr)
+
+results['Concordance Index'] = survival_regression_metric('ctd', outcomes=y_te, predictions=predictions_te, 
+                                                times=times, outcomes_train=y_tr)
+# from auton_survival tutorial
+from estimators_demo_utils import plot_performance_metrics
+plot_performance_metrics(results, times)
 
 # Output?
 
