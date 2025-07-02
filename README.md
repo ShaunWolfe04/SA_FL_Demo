@@ -14,7 +14,7 @@ currently creates a lot of files, so be warned
 * Status
     - Complete, with good accuracy metrics
 * Changelog
-    *07/02/25
+    * 07/02/25
         * Allow for multiple strategies to be used
         * Currently supported: FedAvg and FedProx
     * 07/01/2025
