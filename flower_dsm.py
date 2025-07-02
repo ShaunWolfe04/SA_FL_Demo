@@ -41,6 +41,7 @@ with warnings.catch_warnings():
     from auton_survival.datasets import load_dataset
     from auton_survival.models import dsm
     import scipy.integrate
+    import sys
 
 # Define trapz manually using trapezoid
 scipy.integrate.trapz = scipy.integrate.trapezoid
@@ -55,8 +56,14 @@ disable_progress_bar()
 NUM_CLIENTS = 10 # The number of partitions
 BATCH_SIZE = 32 # Self explanatory, how large is a batch
 
-# TODO: call your dataset
-# Example for SUPPORT in auton_survival
+from strategy import gen_strategy
+# handle args
+arg = sys.argv[1] if len(sys.argv) > 1 else 'avg'
+config = {}
+if arg.lower()=='prox':
+    config['proximal_mu']=0.01
+strategy=gen_strategy(arg, **config)
+
 
 # (uses auton_survival)
 outcomes, features = load_dataset(dataset='SUPPORT')
@@ -154,14 +161,18 @@ class DSMModel(dsm.DSMBase):
         self.optimizer = dsm.utilities.get_optimizer(self.torch_model, lr)
     
 
-def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elbo=True, bs=100, random_seed=0):
-    #TODO: Implement early stopping
+def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, config=None, initial_parameters=None, n_iter=10, elbo=True, bs=100, random_seed=0):
+ 
 
-    if model.stop_training is True:
-        print("early stopping criterion met. Skipping train cycle...")
-        return model
-    else:
-        print("???")
+    # --- CONFIG SETUP ---
+    proximal_mu = config.get("proximal_mu") if config else None
+    # If proximal_mu is still None at this point, set it to 0.0.
+    proximal_mu = 0.0 if proximal_mu is None else proximal_mu
+    # --- END SETUP ---
+
+    if config is None:
+        print("error")
+
     nbatches = int(x_tr.shape[0]/bs)+1
     dics = []
     costs = []
@@ -174,8 +185,8 @@ def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elb
     patience = 0
     oldcost = float('inf')
     
-    torch.manual_seed(model.random_seed)
-    np.random.seed(model.random_seed)
+    #torch.manual_seed(model.random_seed)
+    #np.random.seed(model.random_seed)
 
 
     for i in range(n_iter):
@@ -200,6 +211,18 @@ def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elb
                                                     elbo=elbo,
                                                     risk=str(r+1))
             # print ("Train Loss", float(loss))
+            # --- FEDPROX MODIFICATION START ---
+            if initial_parameters is not None and proximal_mu is not None:
+                prox_term = 0.0
+                # initial_parameters is a list of numpy arrays, convert to tensors
+                global_params = [torch.from_numpy(p).to(DEVICE) for p in initial_parameters]
+                
+                # Iterate over current model parameters and the loaded global parameters
+                for local_p, global_p in zip(model.torch_model.parameters(), global_params):
+                    prox_term += (local_p - global_p).norm(2)**2
+                    
+                loss += (proximal_mu / 2) * prox_term
+            # --- FEDPROX MODIFICATION END ---
             loss.backward()
             
             model.optimizer.step()
@@ -212,11 +235,12 @@ def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elb
         dics.append(deepcopy(model.torch_model.state_dict()))
 
         # print(f"costs[-1]: {costs[-1]}, oldcost: {oldcost}")
+        """
         if costs[-1] >= oldcost:
             if patience == 2: # or n_iter
                 print("Model did not improve on this turn.")
                 minm = np.argmin(costs)
-                model.torch_model.load_state_dict(dics[minm])
+                #model.torch_model.load_state_dict(dics[minm])
 
                 del dics
                 model.fitted = True
@@ -229,10 +253,10 @@ def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elb
         oldcost = costs[-1]
 
     minm = np.argmin(costs)
-    model.torch_model.load_state_dict(dics[minm])
+    #model.torch_model.load_state_dict(dics[minm])
 
     del dics
-    
+    """
 
     model.fitted = True
     return model
@@ -264,7 +288,7 @@ def set_parameters(net, parameters: List[np.ndarray]):
 def get_parameters(net) -> List[np.ndarray]:
     return [val.cpu().numpy() for _, val in net.state_dict().items()]
 
-stateful_model = DSMModel(1, 1)
+
 client_models = []
 for i in range(NUM_CLIENTS):
     print(f"Setting up model for client partition {i}...")
@@ -279,7 +303,6 @@ for i in range(NUM_CLIENTS):
     client_models.append(dsm_model)
 
     # Store the fully prepared, persistent model object
-    client_models.append(dsm_model)
 print("--- All client models are ready. ---\n")
 
 # Call load_datasets in client_fn
@@ -302,9 +325,8 @@ class FlowerClient(NumPyClient):
     
     def fit(self, parameters, config):
         set_parameters(self.model, parameters)
-        self.dsm_model = train(self.dsm_model, self.x_tr, self.t_tr, self.e_tr, self.x_val, self.t_val, self.e_val, n_iter=5, bs=16)
-        stateful_model=self.dsm_model
-        return get_parameters(self.model), len(self.x_tr), {}
+        self.dsm_model = train(self.dsm_model, self.x_tr, self.t_tr, self.e_tr, self.x_val, self.t_val, self.e_val, config, initial_parameters=parameters, n_iter=5, bs=16)
+        return get_parameters(self.model), len(self.x_tr), {} # {} can be any sort of metrics
     
     def evaluate(self, parameters, config):
         set_parameters(self.model, parameters)
@@ -336,50 +358,6 @@ client = ClientApp(client_fn=client_fn)
 # Create a NEW strategy (inherits from FedAvg)
 
 
-class SaveModelStrategy(fl.server.strategy.FedAvg):
-    def aggregate_fit(
-        self,
-        server_round: int,
-        results: list[tuple[fl.server.client_proxy.ClientProxy, fl.common.FitRes]],
-        failures: list[Union[tuple[ClientProxy, FitRes], BaseException]],
-    ) -> tuple[Optional[Parameters], dict[str, Scalar]]:
-
-        # Call aggregate_fit from base class (FedAvg) to aggregate parameters and metrics
-        aggregated_parameters, aggregated_metrics = super().aggregate_fit(
-            server_round, results, failures
-        )
-
-        if aggregated_parameters is not None:
-            # Convert `Parameters` to `list[np.ndarray]`
-            aggregated_ndarrays: list[np.ndarray] = fl.common.parameters_to_ndarrays(
-                aggregated_parameters
-            )
-
-            # Save aggregated_ndarrays to disk
-            print(f"Saving round {server_round} aggregated_ndarrays...")
-            np.savez(f"round-{server_round}-weights.npz", *aggregated_ndarrays)
-
-        return aggregated_parameters, aggregated_metrics
-
-
-# Create strategy and pass into ServerApp
-def server_fn(context):
-    strategy = SaveModelStrategy(
-        # (same arguments as FedAvg here)
-    )
-    config = ServerConfig(num_rounds=3)
-    return ServerAppComponents(strategy=strategy, config=config)
-
-
-app = ServerApp(server_fn=server_fn)
-# Create FedAvg strategy
-strategy = SaveModelStrategy(
-    fraction_fit=1.0,  # Sample 100% of available clients for training
-    fraction_evaluate=0.5,  # Sample 50% of available clients for evaluation
-    min_fit_clients=10,  # Never sample less than 10 clients for training
-    min_evaluate_clients=5,  # Never sample less than 5 clients for evaluation
-    min_available_clients=10,  # Wait until all 10 clients are available
-)
 
 
 def server_fn(context: Context) -> ServerAppComponents:
@@ -390,15 +368,14 @@ def server_fn(context: Context) -> ServerAppComponents:
     wrapped in the returned ServerAppComponents object.
     """
 
-    # Configure the server for 5 rounds of training
-    config = ServerConfig(num_rounds=5)
+    # Configure the server for 10 rounds of training
+    config = ServerConfig(num_rounds=30)
 
     return ServerAppComponents(strategy=strategy, config=config)
 
 
 # Create the ServerApp
 server = ServerApp(server_fn=server_fn)
-
 
 
 # Specify the resources each of your clients need
@@ -424,7 +401,7 @@ print("success")
 
 # here is where the code starts to be bad
 
-weights_filepath = "round-5-weights.npz"
+weights_filepath = "round-30-weights.npz"
 
 weights = np.load(weights_filepath)
 parameters_list = [weights[key] for key in weights.files]
@@ -446,6 +423,9 @@ results['Brier Score'] = survival_regression_metric('brs', outcomes=y_te, predic
 
 results['Concordance Index'] = survival_regression_metric('ctd', outcomes=y_te, predictions=predictions_te, 
                                                 times=times, outcomes_train=y_tr)
+
+print('\n'.join([f"Average {metric}: {np.mean(scores):.4f}" for metric, scores in results.items()]))
+
 # from auton_survival tutorial
 from estimators_demo_utils import plot_performance_metrics
 plot_performance_metrics(results, times)

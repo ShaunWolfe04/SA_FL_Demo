@@ -6,21 +6,41 @@ to run: pip install -r requirements.txt
 
 ### flower_dsm.py: 
 Deep Survival Machines integrated into Flower \
+Uses FedAvg \
 command to run: \
-`TQDM_DISABLE=1 python3 flower_dsm.py` (less noisy output)
+`TQDM_DISABLE=1 python3 flower_dsm.py <strategy>` (less noisy output) \
+available strategy keywords: avg, prox. Default: avg \
+currently creates a lot of files, so be warned
 * Status
-    - Complete, but has worse accuracy than non-FL counterpart
+    - Complete, with good accuracy metrics
 * Changelog
+    *07/02/25
+        * Allow for multiple strategies to be used
+        * Currently supported: FedAvg and FedProx
+    * 07/01/2025
+        * Small update to improve performance
     * 06/27/25
         * Added rough version of early stopping
         * Added support for model extraction after simulation
         * Added post-simulation evalutation
+        * Speed up runtime by around half a minute
     * 06/25/25
         * Fixed noisy output with deprecation warnings and tqdm
         * Refactored DSMModel to inherit from DSMBase
+    * 07/02/25
 * Future improvements:
     * Refactor to allow for clustering
     * Attempt to improve accuracy
+    * Make it so that it does not create 50 files in your wd
+
+### strategy.py
+Extra framework for strategy selection in flower_dsm.py
+* Status
+    - Has support for FedAvg and FedProx, and also saves models for accuracy calculation by default
+* Changelog
+    * 07/02/25
+        * init
+
 
 ### flower_template.py: 
 a template for implementing survival analysis in Flower. \
