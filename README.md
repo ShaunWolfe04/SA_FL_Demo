@@ -12,12 +12,17 @@ command to run: \
 available strategy keywords: avg, prox. Default: avg \
 currently creates a lot of files, so be warned
 * Status
-    - Complete, with good accuracy metrics
+    - Complete with support for multiple data splits and multiple datasets
 * Changelog
+    * 07/16/25
+        * Added support to pick SUPPORT, METABRIC, or SEER as your dataset
+        * Can pick between iid and dirichlet distributions for SUPPORT and METABRIC
+        * Can pick between iid distribution and a location-based distribution for SEER
+        * (SEER data not provided)
     * 07/02/25
         * Allow for multiple strategies to be used
         * Currently supported: FedAvg and FedProx
-    * 07/01/2025
+    * 07/01/25
         * Small update to improve performance
     * 06/27/25
         * Added rough version of early stopping
@@ -33,6 +38,14 @@ currently creates a lot of files, so be warned
     * Attempt to improve accuracy
     * Make it so that it does not create 50 files in your wd
 
+
+### get_dataset.py
+Extra framework for dataset and distribution selection for flower_dsm.py
+* Status
+    * Supports SUPPORT, METABRIC, and SEER (SEER data not provided)
+* Changelog
+    * 07/16/2025
+        * init
 ### strategy.py
 Extra framework for strategy selection in flower_dsm.py
 * Status
