@@ -103,6 +103,7 @@ def get_seer(split, NUM_CLIENTS):
         raise Exception("dirichlet has not been implemented for SEER")
         # but you can easily do it yourself
     df = pd.read_csv('SEER.csv')
+    df = df.sample(frac=0.1, random_state=42)
     df.rename(columns={'d.time': 'time'}, inplace=True)
     df.rename(columns={'death': 'event'}, inplace=True)
 

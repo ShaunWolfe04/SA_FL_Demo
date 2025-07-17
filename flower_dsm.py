@@ -8,6 +8,7 @@
 import warnings
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*np.find_common_type is deprecated.*")
+    import ray
     from typing import Callable, Optional, Union
     from collections import OrderedDict
     from typing import List, Tuple
@@ -252,7 +253,7 @@ class DSMModel(dsm.DSMBase):
         # pretrain to find a good starting point for parameters
         # adapted from auton_survival
         
-        premodel = dsm.utilities.pretrain_dsm(self.torch_model, t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor)
+        premodel = dsm.utilities.pretrain_dsm(self.torch_model, t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor, n_iter=1000)
         for r in range(self.torch_model.risks):
             self.torch_model.shape[str(r+1)].data.fill_(float(premodel.shape[str(r+1)]))
             self.torch_model.scale[str(r+1)].data.fill_(float(premodel.scale[str(r+1)]))
@@ -486,6 +487,7 @@ backend_config = {"client_resources": {"num_cpus": 1, "num_gpus": 0.0}}
 # When running on GPU, assign an entire GPU for each client
 if DEVICE == "cuda":
     backend_config = {"client_resources": {"num_cpus": 1, "num_gpus": 1.0}}
+    ray.init(num_gpus=1)
     # Refer to our Flower framework documentation for more details about Flower simulations
     # and how to set up the `backend_config`
 
