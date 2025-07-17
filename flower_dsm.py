@@ -160,6 +160,15 @@ def server_side_evaluation(server_round: int, parameters: fl.common.Parameters, 
 
     predictions_te = _predict_dsm(model, x_te, times)
     results = dict()
+
+    predictions_te = np.clip(predictions_te, 1e-10, 1 - 1e-10)
+
+    # 2. Check for and replace any NaN values with a neutral probability (0.5).
+    #    This prevents the metric function from crashing.
+    if np.isnan(predictions_te).any():
+        print(f"WARNING: NaN values detected in predictions at round {server_round}. Replacing with 0.5.")
+        predictions_te = np.nan_to_num(predictions_te, nan=0.5)
+    
     results['Brier Score'] = survival_regression_metric('brs', outcomes=y_te, predictions=predictions_te, 
                                                     times=times, outcomes_train=y_tr)
 
