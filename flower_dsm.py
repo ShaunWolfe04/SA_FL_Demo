@@ -38,13 +38,18 @@ with warnings.catch_warnings():
 
     from auton_survival.preprocessing import Preprocessor
     from auton_survival.datasets import load_dataset
-    from auton_survival.datasets import load_dataset
     from auton_survival.models import dsm
     import scipy.integrate
     import sys
+    scipy.integrate.trapz = scipy.integrate.trapezoid
+    from auton_survival.estimators import _predict_dsm
+    from auton_survival.metrics import survival_regression_metric
 
 # Define trapz manually using trapezoid
-scipy.integrate.trapz = scipy.integrate.trapezoid
+import time
+import os
+
+start_time = time.time()
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Training on {DEVICE}")
@@ -56,16 +61,58 @@ disable_progress_bar()
 NUM_CLIENTS = 10 # The number of partitions
 BATCH_SIZE = 32 # Self explanatory, how large is a batch
 
-from strategy import gen_strategy
-# handle args
-arg = sys.argv[1] if len(sys.argv) > 1 else 'avg'
-config = {}
-if arg.lower()=='prox':
-    config['proximal_mu']=0.01
-strategy=gen_strategy(arg, **config)
+import argparse
 
+# 1. Create the parser
+parser = argparse.ArgumentParser(description="Run Federated Survival Analysis Experiments.")
+
+# 2. Add arguments for your experimental variables
+parser.add_argument(
+    "--dataset", 
+    type=str, 
+    choices=['SUPPORT', 'METABRIC', 'SEER'], 
+    default='SUPPORT', 
+    help="Name of the dataset to use."
+)
+parser.add_argument(
+    "--split", 
+    type=str, 
+    choices=['iid', 'dirichlet', 'location'], 
+    default='iid', 
+    help="Type of data split (iid or non-iid dirichlet)."
+)
+parser.add_argument(
+    "--strategy", 
+    type=str, 
+    choices=['avg', 'prox'], 
+    default='avg', 
+    help="Federated learning strategy to use (FedAvg or FedProx)."
+)
+
+parser.add_argument(
+    "--prox",
+    type=float,
+    default=0.1,
+    help="Hyperparameter for FedProx, accessed when --strategy is \"prox\""
+)
+
+# 3. Parse the arguments
+args = parser.parse_args()
+
+from get_dataset import get_dataset
+
+#13 clients for 13 states
+if args.dataset=="SEER":
+    NUM_CLIENTS = 13
+x_tr, x_te, y_tr, y_te, fds= get_dataset(args.dataset, args.split, NUM_CLIENTS) 
+
+
+
+
+print(f"FL with {NUM_CLIENTS} clients")
 
 # (uses auton_survival)
+"""
 outcomes, features = load_dataset(dataset='SUPPORT')
 cat_feats = ['sex', 'dzgroup', 'dzclass', 'income', 'race', 'ca']
 num_feats = ['age', 'num.co', 'meanbp', 'wblc', 'hrt', 'resp', 
@@ -75,19 +122,70 @@ num_feats = ['age', 'num.co', 'meanbp', 'wblc', 'hrt', 'resp',
 preprocessor = Preprocessor(cat_feat_strat='ignore', num_feat_strat= 'mean') 
 transformer = preprocessor.fit(features, cat_feats=cat_feats, num_feats=num_feats,
                                 one_hot=True, fill_value=-1)
-features = transformer.transform(features)
+features_upd = transformer.transform(features)
+
+
+#this code is for direichlet
+features_upd["dzgroup"]=features["dzgroup"]
 from sklearn.model_selection import train_test_split
-x_tr, x_te, y_tr, y_te = train_test_split(features, outcomes, test_size=0.2, random_state=1)
-
-combined_df = pd.concat([x_tr, y_tr], axis=1)
-combined_te = pd.concat([x_te, y_te], axis=1)
+x_tr, x_te, y_tr, y_te = train_test_split(features_upd, outcomes, test_size=0.2, random_state=1)
+"""
 
 
-# Need to convert this to a file to pass into FederatedDataset
-temp_csv_path = "support_dataset_temp.csv"
-combined_df.to_csv(temp_csv_path, index=False)
-fds = FederatedDataset(dataset="csv", partitioners={"train": NUM_CLIENTS}, data_files=temp_csv_path)
-"""What to change here: data_files"""
+global_history = {
+    "rounds": [],
+    "Brier Score": [],
+    "Concordance Index": []
+}
+
+def server_side_evaluation(server_round: int, parameters: fl.common.Parameters, config: dict):
+    """
+    This function is called by the strategy after aggregation.
+    It evaluates the global model on the hold-out test set.
+    """
+    global global_history
+    # 1. Use one of the client model objects as a template
+    model = client_models[0]
+    
+    # 2. Load the aggregated weights into the model
+
+    set_parameters(model.torch_model, parameters)
+    model.fitted = True
+
+    # 3. Define the time points for evaluation (should be consistent)
+    times = np.quantile(y_tr['time'][y_tr['event']==1], np.linspace(0.1, 1, 10)).tolist()
+
+    # 4. Perform prediction and calculate metrics
+
+    predictions_te = _predict_dsm(model, x_te, times)
+    results = dict()
+    results['Brier Score'] = survival_regression_metric('brs', outcomes=y_te, predictions=predictions_te, 
+                                                    times=times, outcomes_train=y_tr)
+
+    results['Concordance Index'] = survival_regression_metric('ctd', outcomes=y_te, predictions=predictions_te, 
+                                                    times=times, outcomes_train=y_tr)
+
+    metrics_dict = {metric: float(np.mean(scores)) for metric, scores in results.items()}
+
+    # --- FIX 2: Append the results to your global history object ---
+    
+    global_history["rounds"].append(server_round)
+    global_history["Brier Score"].append(metrics_dict["Brier Score"])
+    global_history["Concordance Index"].append(metrics_dict["Concordance Index"])
+    # 5. Return the metric in a dictionary. Flower will log this.
+    # We return the average C-Index over the time points.
+    return None, metrics_dict
+
+
+from strategy import gen_strategy
+# handle args
+
+config = {}
+if args.strategy =='prox':
+    config['proximal_mu']=0.1
+strategy=gen_strategy(args.strategy, server_side_evaluation, **config)
+
+
 
 
 def prepare_data(data):
@@ -106,6 +204,9 @@ def prepare_data(data):
 
 def load_datasets(partition_id: int):
     hf_partition= fds.load_partition(partition_id)
+
+    if "_partition" in hf_partition.column_names:
+        hf_partition = hf_partition.remove_columns("_partition")
     partition_train_test = hf_partition.train_test_split(test_size=0.2, seed=0)
     train = partition_train_test["train"].to_pandas()
     val = partition_train_test["test"].to_pandas()
@@ -369,7 +470,7 @@ def server_fn(context: Context) -> ServerAppComponents:
     """
 
     # Configure the server for 10 rounds of training
-    config = ServerConfig(num_rounds=30)
+    config = ServerConfig(num_rounds=50)
 
     return ServerAppComponents(strategy=strategy, config=config)
 
@@ -391,7 +492,7 @@ if DEVICE == "cuda":
 
 
 # Run simulation
-history = run_simulation(
+run_simulation(
     server_app=server,
     client_app=client,
     num_supernodes=NUM_CLIENTS, 
@@ -399,9 +500,11 @@ history = run_simulation(
 )
 print("success")
 
+print(global_history)
+
 # here is where the code starts to be bad
 
-weights_filepath = "round-30-weights.npz"
+weights_filepath = "round-50-weights.npz"
 
 weights = np.load(weights_filepath)
 parameters_list = [weights[key] for key in weights.files]
@@ -416,7 +519,7 @@ from auton_survival.estimators import _predict_dsm
 from auton_survival.metrics import survival_regression_metric
 predictions_te = _predict_dsm(model, x_te, times)
 
-
+"""
 results = dict()
 results['Brier Score'] = survival_regression_metric('brs', outcomes=y_te, predictions=predictions_te, 
                                                 times=times, outcomes_train=y_tr)
@@ -425,10 +528,69 @@ results['Concordance Index'] = survival_regression_metric('ctd', outcomes=y_te, 
                                                 times=times, outcomes_train=y_tr)
 
 print('\n'.join([f"Average {metric}: {np.mean(scores):.4f}" for metric, scores in results.items()]))
+"""
 
+
+# Time to print results
+
+end_time = time.time()
+duration = end_time-start_time
+print(f"Time to run experiment: {duration}")
+experiment_name = f"{args.dataset}_{args.split}_{args.strategy}"
+if args.strategy == 'prox':
+    experiment_name += f"_mu{args.prox_mu}"
+
+os.makedirs("plots", exist_ok=True)
+os.makedirs("results", exist_ok=True)
+
+if global_history["rounds"]:
+    # For Brier Score, lower is better, so we use argmin
+    best_brier_idx = np.argmin(global_history["Brier Score"])
+    best_brier_round = global_history["rounds"][best_brier_idx]
+    best_brier_score = global_history["Brier Score"][best_brier_idx]
+
+    # For Concordance Index, higher is better, so we use argmax
+    best_cindex_idx = np.argmax(global_history["Concordance Index"])
+    best_cindex_round = global_history["rounds"][best_cindex_idx]
+    best_cindex_score = global_history["Concordance Index"][best_cindex_idx]
+
+    # Print the final summary
+    print("\n--- Best Performance Across All Rounds ---")
+    print(f"Round {best_brier_round}: Brier Score: {best_brier_score:.4f}")
+    print(f"Round {best_cindex_round}: Concordance Index: {best_cindex_score:.4f}")
+
+    # Add metrics to results file
+    output_string = (
+        f"Test: {experiment_name}\n"
+        f"Round {best_brier_round}: Brier Score: {best_brier_score:.4f}\n"
+        f"Round {best_cindex_round}: Concordance Index: {best_cindex_score:.4f}\n"
+        f"Duration (seconds): {duration:.2f}\n"
+        f"\n-------------------------------------------------\n"
+    )
+
+    # Append the results to the file
+    results_path = os.path.join("results", "results.txt")
+    with open(results_path, "a") as f:
+        f.write(output_string)
+    print(f"Best metrics appended to {results_path}")
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(global_history["rounds"], global_history["Concordance Index"], marker='o', label="Concordance Index")
+    plt.plot(global_history["rounds"], global_history["Brier Score"], marker='x', label="Brier Score")
+    
+    plt.title(f"Convergence: {experiment_name}")
+    plt.xlabel("Communication Round")
+    plt.ylabel("Metric Value")
+    plt.grid(True)
+    plt.legend()
+    
+    plot_path = os.path.join("plots", f"{experiment_name}_convergence.png")
+    plt.savefig(plot_path)
+    plt.close()
+    print(f"Plotting was a success")
 # from auton_survival tutorial
-from estimators_demo_utils import plot_performance_metrics
-plot_performance_metrics(results, times)
+#from estimators_demo_utils import plot_performance_metrics
+#plot_performance_metrics(results, times)
 
 # Output?
 
