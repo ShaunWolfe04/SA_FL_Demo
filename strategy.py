@@ -35,7 +35,7 @@ def add_saving_logic(strategy: Strategy) -> Strategy:
     return strategy
 
 
-def gen_strategy(strategy_name: str, **strategy_kwargs: any) -> Strategy:
+def gen_strategy(strategy_name: str, eval_fn, **strategy_kwargs: any) -> Strategy:
     """
     Generates and configures a Flower strategy based on a name and keyword arguments.
     """
@@ -48,6 +48,7 @@ def gen_strategy(strategy_name: str, **strategy_kwargs: any) -> Strategy:
         "min_fit_clients": 10,
         "min_evaluate_clients": 5,
         "min_available_clients": 10,
+        "evaluate_fn": eval_fn,
     }
     
     # Merge common parameters with strategy-specific ones passed in kwargs
