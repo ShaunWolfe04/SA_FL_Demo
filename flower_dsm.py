@@ -71,7 +71,7 @@ parser = argparse.ArgumentParser(description="Run Federated Survival Analysis Ex
 parser.add_argument(
     "--dataset", 
     type=str, 
-    choices=['SUPPORT', 'METABRIC', 'SEER'], 
+    choices=['SUPPORT', 'METABRIC', 'SEER', 'FRAMINGHAM', 'PBC'], 
     default='SUPPORT', 
     help="Name of the dataset to use."
 )
@@ -147,14 +147,15 @@ def server_side_evaluation(server_round: int, parameters: fl.common.Parameters, 
     global global_history
     # 1. Use one of the client model objects as a template
     model = client_models[0]
-    
+    print("Sleeping for 3s...")
+    time.sleep(3)
     # 2. Load the aggregated weights into the model
 
     set_parameters(model.torch_model, parameters)
     model.fitted = True
 
     # 3. Define the time points for evaluation (should be consistent)
-    times = np.quantile(y_tr['time'][y_tr['event']==1], np.linspace(0.1, 1, 10)).tolist()
+    times = np.quantile(y_tr['time'][y_tr['event']==1], np.linspace(0.1, 0.95, 10)).tolist()
 
     # 4. Perform prediction and calculate metrics
 
@@ -549,7 +550,7 @@ duration = end_time-start_time
 print(f"Time to run experiment: {duration}")
 experiment_name = f"{args.dataset}_{args.split}_{args.strategy}"
 if args.strategy == 'prox':
-    experiment_name += f"_mu{args.prox_mu}"
+    experiment_name += f"_mu{args.prox}"
 
 os.makedirs("plots", exist_ok=True)
 os.makedirs("results", exist_ok=True)

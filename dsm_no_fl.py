@@ -8,6 +8,7 @@ import scipy.integrate
 scipy.integrate.trapz = scipy.integrate.trapezoid
 
 import numpy as np
+from copy import deepcopy
 from auton_survival.datasets import load_dataset
 from auton_survival.models import dsm
 import torch
@@ -26,6 +27,7 @@ class DSMModel(dsm.DSMBase):
         self.torch_model = None
         self.lr = None
         self.optimizer = None
+        self.stop_training=False
 
     def setup_model(self, t_tr, e_tr, t_val, e_val, inputdim=None, x_tr = None, lr=1e-3, optimizer='Adam', risks=1):
         if inputdim is None:
@@ -48,7 +50,7 @@ class DSMModel(dsm.DSMBase):
         for r in range(self.torch_model.risks):
             self.torch_model.shape[str(r+1)].data.fill_(float(premodel.shape[str(r+1)]))
             self.torch_model.scale[str(r+1)].data.fill_(float(premodel.scale[str(r+1)]))
-    
+        
     def _setup_optimizer(self, lr):
         # setup optimizer after pretraining and before training
         self.optimizer = dsm.utilities.get_optimizer(self.torch_model, lr)
@@ -56,8 +58,21 @@ class DSMModel(dsm.DSMBase):
 
 def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elbo=True, bs=100, random_seed=0):
     #TODO: Implement early stopping
+
+    if model.stop_training is True:
+        print("early stopping criterion met. Skipping train cycle...")
+        return model
     nbatches = int(x_tr.shape[0]/bs)+1
+    dics = []
+    costs = []
+    valid_loss = test(model, x_val, t_val, e_val)
     
+    valid_loss = valid_loss.detach().cpu().numpy()
+    costs.append(float(valid_loss))
+    dics.append(deepcopy(model.torch_model.state_dict()))  
+
+    patience = 0
+    oldcost = float('inf')
     
     torch.manual_seed(model.random_seed)
     np.random.seed(model.random_seed)
@@ -90,35 +105,55 @@ def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elb
             model.optimizer.step()
 
 
-        # validation step
-        val_loss=0
-        for r in range(model.torch_model.risks):
-            # elbo = False: used mostly for visualizing the loss, 
-            # or else it could appear to explode
-            val_loss += dsm.losses.conditional_loss(model.torch_model,
-                                                x_val,
-                                                t_val,
-                                                e_val,
-                                                elbo=False,
-                                                risk=str(r+1))
-        print(f"Epoch {i+1}/{n_iter} | Val Loss: {val_loss.item():.4f}")
+
+        valid_loss = test(model, x_val, t_val, e_val)
+        valid_loss = valid_loss.detach().cpu().numpy()
+        costs.append(float(valid_loss))
+        dics.append(deepcopy(model.torch_model.state_dict()))
+
+        print(f"costs[-1]: {costs[-1]}, oldcost: {oldcost}")
+        if costs[-1] >= oldcost:
+            if patience == 2: # or n_iter
+                print("Model did not improve on this turn.")
+                minm = np.argmin(costs)
+                model.torch_model.load_state_dict(dics[minm])
+
+                del dics
+                model.fitted = True
+                model.stop_training = True
+                return model
+            else:
+                patience += 1
+        else:
+            patience = 0
+        oldcost = costs[-1]
+
+    minm = np.argmin(costs)
+    model.torch_model.load_state_dict(dics[minm])
+
+    del dics
+    
+
     model.fitted = True
     return model
+
 
 
 def test(model, x_te, t_te, e_te):
         # validation step
     model.torch_model.eval() # Set the model to evaluation mode (turns off dropout, etc.)
-    val_loss=0
+    test_loss=0
     with torch.no_grad(): # Disable gradient calculations for speed and memory
         for r in range(model.torch_model.risks):
-            val_loss += dsm.losses.conditional_loss(model.torch_model,
+            test_loss += dsm.losses.conditional_loss(model.torch_model,
                                                 x_te,
                                                 t_te,
                                                 e_te,
                                                 elbo=False,
                                                 risk=str(r+1))
-    print(f"Test Loss: {val_loss.item():.4f}")
+    print(f"Test Loss: {test_loss.item():.4f}")
+
+    return test_loss
 
 #code from Gemini to inspect gradients
 #used for debugging
@@ -158,10 +193,25 @@ def view_params(model):
         print(f"  - Preview of values: {preview_values.round(decimals=4).tolist()}")
         print("-" * 20)
 
+import argparse 
 def main():
     # --- Load the dataset --- #
-    outcomes, features = load_dataset(dataset='SUPPORT')
-
+    parser = argparse.ArgumentParser(description="Run centralized DSM experiments.")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        choices=['SUPPORT', 'FRAMINGHAM', 'PBC'],
+        default='SUPPORT',
+        help="Name of the dataset to use."
+    )
+    args = parser.parse_args()
+    outcomes, features = None, None
+    if args.dataset == "SUPPORT":
+        outcomes, features = load_dataset(dataset=args.dataset)
+    else:
+        x, t, e = load_dataset(dataset=args.dataset)
+        features = pd.DataFrame(x)
+        outcomes = pd.DataFrame({'time': t, 'event':e })
     cat_feats = ['sex', 'dzgroup', 'dzclass', 'income', 'race', 'ca']
     num_feats = ['age', 'num.co', 'meanbp', 'wblc', 'hrt', 'resp', 
                 'temp', 'pafi', 'alb', 'bili', 'crea', 'sod', 'ph', 
@@ -182,15 +232,16 @@ def main():
     print(f'Number of training data points: {len(x_tr)}')
     print(f'Number of validation data points: {len(x_val)}')
     print(f'Number of test data points: {len(x_te)}')
-    from auton_survival.preprocessing import Preprocessor
+    if args.dataset == "SUPPORT":
+        from auton_survival.preprocessing import Preprocessor
 
-    # Fit the imputer and scaler to the training data and transform the training, validation and test data
-    preprocessor = Preprocessor(cat_feat_strat='ignore', num_feat_strat= 'mean') 
-    transformer = preprocessor.fit(features, cat_feats=cat_feats, num_feats=num_feats,
-                                    one_hot=True, fill_value=-1)
-    x_tr = transformer.transform(x_tr)
-    x_val = transformer.transform(x_val)
-    x_te = transformer.transform(x_te)
+        # Fit the imputer and scaler to the training data and transform the training, validation and test data
+        preprocessor = Preprocessor(cat_feat_strat='ignore', num_feat_strat= 'mean') 
+        transformer = preprocessor.fit(features, cat_feats=cat_feats, num_feats=num_feats,
+                                        one_hot=True, fill_value=-1)
+        x_tr = transformer.transform(x_tr)
+        x_val = transformer.transform(x_val)
+        x_te = transformer.transform(x_te)
 
     print(x_tr.head(5))
 
@@ -217,12 +268,7 @@ def main():
     
     # --- Instantiate and Train the DSM Model ---
     
-    print("\n--- Step 2: Training the Deep Survival Machines model ---")
-    #TODO
-    # Define a DeepSurvivalAnalysisTorch model
-    # Do training loop (most is defined in auton_survival.models.dsm)
-    # fit function can't be called since it is monolithic
-    # must recreate fit function to run n epochs
+
     inputdim = x_tr.shape[-1]
     #print(f"inputdim: {inputdim}")
     #change these parameters to train the model
@@ -230,7 +276,7 @@ def main():
 
     
     model = DSMModel( inputdim, 3, layers=[100, 100], dist='Weibull', temp=1., discount=1.0, random_seed=0)
-    model.setup_model(t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor, inputdim=inputdim, lr=1e-3, optimizer='Adam')
+    model.setup_model(t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor, inputdim=inputdim, lr=2e-4, optimizer='Adam')
     # DEBUG STUFF
     """
     print("\n--- DEBUG: YOUR CODE'S PRE-FLIGHT CHECK ---")
@@ -267,6 +313,7 @@ def main():
     """
     #print("params before one run")
     #view_params(model.model)
+    
 
     train(model, x_tr_tensor, t_tr_tensor, e_tr_tensor, x_val_tensor, t_val_tensor, e_val_tensor, n_iter = 50)
 
@@ -280,7 +327,6 @@ def main():
     from auton_survival.metrics import survival_regression_metric
     predictions_te = _predict_dsm(model, x_te, times)
 
-    from sksurv.metrics import brier_score
 
     results = dict()
     results['Brier Score'] = survival_regression_metric('brs', outcomes=y_te, predictions=predictions_te, 
@@ -288,6 +334,9 @@ def main():
 
     results['Concordance Index'] = survival_regression_metric('ctd', outcomes=y_te, predictions=predictions_te, 
                                                     times=times, outcomes_train=y_tr)
+    
+    print('\n'.join([f"Average {metric}: {np.mean(scores):.4f}" for metric, scores in results.items()]))
+
     # from auton_survival tutorial
     from estimators_demo_utils import plot_performance_metrics
     plot_performance_metrics(results, times)

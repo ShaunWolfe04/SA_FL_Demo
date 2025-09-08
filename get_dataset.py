@@ -14,9 +14,15 @@ def get_dataset(dataset, split, NUM_CLIENTS):
     if dataset == "SUPPORT":
         return get_support(split, NUM_CLIENTS)
     if dataset == "METABRIC":
+        print("Warning: this setup of DSM is unable to train on the METABRIC dataset")
         return get_metabric(split, NUM_CLIENTS) # Not implemented yet
     if dataset == "SEER":
-        return get_seer(split, NUM_CLIENTS) # Not implemented yet
+        print("Warning: this setup of DSM is unable to train on the SEER dataset")
+        return get_seer(split, NUM_CLIENTS)
+    if dataset == "FRAMINGHAM":
+        return get_fh(split, NUM_CLIENTS)
+    if dataset == "PBC":
+        return get_pbc(split, NUM_CLIENTS) 
     else:
         raise ValueError(f"Dataset unknown: {dataset}")
         
@@ -94,7 +100,7 @@ def get_metabric(split, NUM_CLIENTS):
         )
     else:
         raise Exception("location not implemented for METABRIC")
-    return x_tr, x_te, y_tr, y_te, fds
+    return x_tr.astype('float64'), x_te.astype('float64'), y_tr, y_te, fds
 
 
 def get_seer(split, NUM_CLIENTS):
@@ -163,9 +169,63 @@ def get_seer(split, NUM_CLIENTS):
     return x_tr, x_te, y_tr, y_te, fds
 
 
+def get_fh(split, NUM_CLIENTS):
 
+    x, t, e = load_dataset(dataset="FRAMINGHAM")
+    features = pd.DataFrame(x)
+    outcomes = pd.DataFrame({'time': t, 'event':e })
+    time_bins = pd.qcut(outcomes['time'], q=4, labels=False, duplicates='drop')
+
+    # Create partition split by using times
+    features['_partition'] = time_bins
+    x_tr, x_te, y_tr, y_te = train_test_split(features, outcomes, test_size=0.2, random_state=1)
+
+    # drop partition for test (dropping for train is done later)
+    x_te=x_te.drop(["_partition"], axis=1)
+
+    combined_df = pd.concat([x_tr, y_tr], axis=1)
+    temp_csv_path="framingham.csv"
+    combined_df.to_csv(temp_csv_path, index=False)
+
+    if split == "dirichlet":
+        fds = apply_dirichlet(temp_csv_path, NUM_CLIENTS)
+    elif split == "iid": 
+        fds = FederatedDataset(dataset="csv",
+                            partitioners={"train": NUM_CLIENTS}, 
+                            data_files=temp_csv_path
+        )
+    else:
+        raise Exception("location not implemented for FRAMINGHAM")
+    return x_tr.astype('float64'), x_te.astype('float64'), y_tr, y_te, fds
     
+def get_pbc(split, NUM_CLIENTS):
 
+    x, t, e = load_dataset(dataset="PBC")
+    features = pd.DataFrame(x)
+    outcomes = pd.DataFrame({'time': t, 'event':e })
+    time_bins = pd.qcut(outcomes['time'], q=4, labels=False, duplicates='drop')
+
+    # Create partition split by using times
+    features['_partition'] = time_bins
+    x_tr, x_te, y_tr, y_te = train_test_split(features, outcomes, test_size=0.2, random_state=1)
+
+    # drop partition for test (dropping for train is done later)
+    x_te=x_te.drop(["_partition"], axis=1)
+
+    combined_df = pd.concat([x_tr, y_tr], axis=1)
+    temp_csv_path="pbc.csv"
+    combined_df.to_csv(temp_csv_path, index=False)
+
+    if split == "dirichlet":
+        fds = apply_dirichlet(temp_csv_path, NUM_CLIENTS)
+    elif split == "iid": 
+        fds = FederatedDataset(dataset="csv",
+                            partitioners={"train": NUM_CLIENTS}, 
+                            data_files=temp_csv_path
+        )
+    else:
+        raise Exception("location not implemented for PBC")
+    return x_tr.astype('float64'), x_te.astype('float64'), y_tr, y_te, fds
 
 def apply_dirichlet(temp_csv_path, NUM_CLIENTS):
 

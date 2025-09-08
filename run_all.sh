@@ -22,65 +22,79 @@ echo "--- $(date) Running SUPPORT | IID | FedAvg ---"
 python3 flower_dsm.py --dataset SUPPORT --split iid --strategy avg > logs/support_iid_avg.log 2>&1
 
 echo "--- $(date) Running SUPPORT | IID | FedProx 0.01 ---"
-python3 flower_dsm.py --dataset SUPPORT --split iid --strategy prox --prox_mu 0.01 > logs/support_iid_prox001.log 2>&1
+python3 flower_dsm.py --dataset SUPPORT --split iid --strategy prox --prox 0.01 > logs/support_iid_prox001.log 2>&1
 
 echo "--- $(date) Running SUPPORT | IID | FedProx 0.1 ---"
-python3 flower_dsm.py --dataset SUPPORT --split iid --strategy prox --prox_mu 0.1 > logs/support_iid_prox01.log 2>&1
+python3 flower_dsm.py --dataset SUPPORT --split iid --strategy prox --prox 0.1 > logs/support_iid_prox01.log 2>&1
 
 echo "--- $(date) Running SUPPORT | IID | FedProx 1 ---"
-python3 flower_dsm.py --dataset SUPPORT --split iid --strategy prox --prox_mu 1 > logs/support_iid_prox1.log 2>&1
+python3 flower_dsm.py --dataset SUPPORT --split iid --strategy prox --prox 1 > logs/support_iid_prox1.log 2>&1
 
 echo "--- $(date) Running SUPPORT | dirichlet | FedAvg ---"
 python3 flower_dsm.py --dataset SUPPORT --split dirichlet --strategy avg > logs/support_dirichlet_avg.log 2>&1
 
 echo "--- $(date) Running SUPPORT | dirichlet | FedProx 0.01 ---"
-python3 flower_dsm.py --dataset SUPPORT --split dirichlet --strategy prox --prox_mu 0.01 > logs/support_dirichlet_prox001.log 2>&1
+python3 flower_dsm.py --dataset SUPPORT --split dirichlet --strategy prox --prox 0.01 > logs/support_dirichlet_prox001.log 2>&1
 
 echo "--- $(date) Running SUPPORT | dirichlet | FedProx 0.1 ---"
-python3 flower_dsm.py --dataset SUPPORT --split dirichlet --strategy prox --prox_mu 0.1 > logs/support_dirichlet_prox01.log 2>&1
+python3 flower_dsm.py --dataset SUPPORT --split dirichlet --strategy prox --prox 0.1 > logs/support_dirichlet_prox01.log 2>&1
 
 echo "--- $(date) Running SUPPORT | dirichlet | FedProx 1 ---"
-python3 flower_dsm.py --dataset SUPPORT --split dirichlet --strategy prox --prox_mu 1 > logs/support_dirichlet_prox1.log 2>&1
+python3 flower_dsm.py --dataset SUPPORT --split dirichlet --strategy prox --prox 1 > logs/support_dirichlet_prox1.log 2>&1
 
 
 # --- METABRIC Dataset Experiments ---
-echo "--- $(date) Running METABRIC | IID | FedAvg ---"
-python3 flower_dsm.py --dataset METABRIC --split iid --strategy avg > logs/metabric_iid_avg.log 2>&1
+echo "--- $(date) Running FRAMINGHAM | IID | FedAvg ---"
+python3 flower_dsm.py --dataset FRAMINGHAM --split iid --strategy avg > logs/framingham_iid_avg.log 2>&1
 
-echo "--- $(date) Running METABRIC | IID | FedProx 0.01 ---"
-python3 flower_dsm.py --dataset METABRIC --split iid --strategy prox --prox_mu 0.01 > logs/metabric_iid_prox001.log 2>&1
+echo "--- $(date) Running FRAMINGHAM | IID | FedProx 0.01 ---"
+python3 flower_dsm.py --dataset FRAMINGHAM --split iid --strategy prox --prox 0.01 > logs/framingham_iid_prox001.log 2>&1
 
-echo "--- $(date) Running METABRIC | IID | FedProx 0.1 ---"
-python3 flower_dsm.py --dataset METABRIC --split iid --strategy prox --prox_mu 0.1 > logs/metabric_iid_prox01.log 2>&1
+echo "--- $(date) Running FRAMINGHAM | IID | FedProx 0.1 ---"
+python3 flower_dsm.py --dataset FRAMINGHAM --split iid --strategy prox --prox 0.1 > logs/framingham_iid_prox01.log 2>&1
 
-echo "--- $(date) Running METABRIC | IID | FedProx 1 ---"
-python3 flower_dsm.py --dataset METABRIC --split iid --strategy prox --prox_mu 1 > logs/metabric_iid_prox1.log 2>&1
+echo "--- $(date) Running FRAMINGHAM | IID | FedProx 1 ---"
+python3 flower_dsm.py --dataset FRAMINGHAM --split iid --strategy prox --prox 1 > logs/framingham_iid_prox1.log 2>&1
 
-echo "--- $(date) Running METABRIC | dirichlet | FedAvg ---"
-python3 flower_dsm.py --dataset METABRIC --split dirichlet --strategy avg > logs/metabric_dirichlet_avg.log 2>&1
+echo "--- $(date) Running FRAMINGHAM | dirichlet | FedAvg ---"
+python3 flower_dsm.py --dataset FRAMINGHAM --split dirichlet --strategy avg > logs/framingham_dirichlet_avg.log 2>&1
 
-echo "--- $(date) Running METABRIC | dirichlet | FedProx 0.01 ---"
-python3 flower_dsm.py --dataset METABRIC --split dirichlet --strategy prox --prox_mu 0.01 > logs/metabric_dirichlet_prox001.log 2>&1
+echo "--- $(date) Running FRAMINGHAM | dirichlet | FedProx 0.01 ---"
+python3 flower_dsm.py --dataset FRAMINGHAM --split dirichlet --strategy prox --prox 0.01 > logs/framingham_dirichlet_prox001.log 2>&1
 
-echo "--- $(date) Running METABRIC | dirichlet | FedProx 0.1 ---"
-python3 flower_dsm.py --dataset METABRIC --split dirichlet --strategy prox --prox_mu 0.1 > logs/metabric_dirichlet_prox01.log 2>&1
+echo "--- $(date) Running FRAMINGHAM | dirichlet | FedProx 0.1 ---"
+python3 flower_dsm.py --dataset FRAMINGHAM --split dirichlet --strategy prox --prox 0.1 > logs/framingham_dirichlet_prox01.log 2>&1
 
-echo "--- $(date) Running METABRIC | dirichlet | FedProx 1 ---"
-python3 flower_dsm.py --dataset METABRIC --split dirichlet --strategy prox --prox_mu 1 > logs/metabric_dirichlet_prox1.log 2>&1
+echo "--- $(date) Running FRAMINGHAM | dirichlet | FedProx 1 ---"
+python3 flower_dsm.py --dataset FRAMINGHAM --split dirichlet --strategy prox --prox 1 > logs/framingham_dirichlet_prox1.log 2>&1
 
 
 # --- SEER Dataset Experiments ---
-echo "--- $(date) Running SEER | IID | FedAvg ---"
-python3 flower_dsm.py --dataset SEER --split iid --strategy avg > logs/seer_iid_avg.log 2>&1
+echo "--- $(date) Running PBC | IID | FedAvg ---"
+python3 flower_dsm.py --dataset PBC --split iid --strategy avg > logs/seer_iid_avg.log 2>&1
 
-echo "--- $(date) Running SEER | IID | FedProx 0.1 ---"
-python3 flower_dsm.py --dataset SEER --split iid --strategy prox --prox_mu 0.1 > logs/seer_iid_prox01.log 2>&1
+echo "--- $(date) Running PBC | IID | FedProx 0.01 ---"
+python3 flower_dsm.py --dataset PBC --split iid --strategy prox --prox 0.01 > logs/pbc_iid_prox001.log 2>&1
 
-echo "--- $(date) Running SEER | location | FedAvg ---"
-python3 flower_dsm.py --dataset SEER --split location --strategy avg > logs/seer_location_avg.log 2>&1
+echo "--- $(date) Running PBC | IID | FedProx 0.1 ---"
+python3 flower_dsm.py --dataset PBC --split iid --strategy prox --prox 0.1 > logs/pbc_iid_prox01.log 2>&1
 
-echo "--- $(date) Running SEER | location | FedProx 0.1 ---"
-python3 flower_dsm.py --dataset SEER --split location --strategy prox --prox_mu 0.1 > logs/seer_location_prox01.log 2>&1
+
+echo "--- $(date) Running PBC | IID | FedProx 1 ---"
+python3 flower_dsm.py --dataset PBC --split iid --strategy prox --prox 1 > logs/pbc_iid_prox1.log 2>&1
+
+echo "--- $(date) Running PBC | dirichlet | FedAvg ---"
+python3 flower_dsm.py --dataset PBC --split dirichlet --strategy avg > logs/pbc_dirichlet_avg.log 2>&1
+
+echo "--- $(date) Running PBC | dirichlet | FedProx 0.01 ---"
+python3 flower_dsm.py --dataset PBC --split dirichlet --strategy prox --prox 0.01 > logs/pbc_dirichlet_prox001.log 2>&1
+
+echo "--- $(date) Running PBC | dirichlet | FedProx 0.1 ---"
+python3 flower_dsm.py --dataset PBC --split dirichlet --strategy prox --prox 0.1 > logs/pbc_dirichlet_prox01.log 2>&1
+
+
+echo "--- $(date) Running PBC | dirichlet | FedProx 1 ---"
+python3 flower_dsm.py --dataset PBC --split dirichlet --strategy prox --prox 1 > logs/pbc_dirichlet_prox1.log 2>&1
 
 # ... and so on for all your other experiment combinations ...
 

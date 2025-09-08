@@ -2,18 +2,26 @@
 Federated Learning in survival analysis environments
 
 to run: pip install -r requirements.txt
-(conda env coming soon?)
+torchvision needs a special installation
 
+### Run full FL experiment
+`./run_all.sh`
+- Will generate logs, plots, and full results.txt file
 ### flower_dsm.py: 
 Deep Survival Machines integrated into Flower \
 Uses FedAvg \
 command to run: \
-`TQDM_DISABLE=1 python3 flower_dsm.py <strategy>` (less noisy output) \
-available strategy keywords: avg, prox. Default: avg \
-currently creates a lot of files, so be warned
+`TQDM_DISABLE=1 python3 flower_dsm.py --dataset <dataset> --strategy <strategy> --split <split>, --prox <proximal_mu>` (less noisy output) \
+--dataset: SUPPORT, FRAMINGHAM, PBC. Default: SUPPORT \
+--strategy keywords: avg, prox. Default: avg \
+--split: iid, dirichlet. Default: iid \
+--prox: float. Default: 0.1 \
+Currently creates a lot of files, so be warned
 * Status
     - Complete with support for multiple data splits and multiple datasets
 * Changelog
+    * 09/08/25
+        * Add new datasets: FRAMINGHAM, PBC, METABRIC and SEER are now obsolete
     * 07/16/25
         * Added support to pick SUPPORT, METABRIC, or SEER as your dataset
         * Can pick between iid and dirichlet distributions for SUPPORT and METABRIC
@@ -44,6 +52,8 @@ Extra framework for dataset and distribution selection for flower_dsm.py
 * Status
     * Supports SUPPORT, METABRIC, and SEER (SEER data not provided)
 * Changelog
+    * 09/08/25
+        * New datasets, FRAMINGHAM, PBC, Metabric and Seer are callable, but obsolete.
     * 07/16/2025
         * init
 ### strategy.py
@@ -68,8 +78,10 @@ Currently just a broken version of flower_dsm.py without train/server/client ini
 implementing dsm without using the suggested "SurvivalModel" approach \
 Need to do this since the functions in SurvivalModel are monolithic
 * Status
-    * Complete with a couple small improvements needed
+    * Complete, needs better stopping criteria
 * Changelog
+    * 09/08/25
+        * Can choose between SUPPORT, FRAMINGHAM, and PBC via --dataset (same as flower_dsm.py)
     * 06/25/25
         * Refactored DSMModel to inherit from DSMBase
         * Added accuracy metrics
