@@ -263,7 +263,7 @@ class DSMModel(dsm.DSMBase):
         # pretrain to find a good starting point for parameters
         # adapted from auton_survival
         
-        premodel = dsm.utilities.pretrain_dsm(self.torch_model, t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor, n_iter=1000)
+        premodel = dsm.utilities.pretrain_dsm(self.torch_model, t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor, n_iter=10000)
         for r in range(self.torch_model.risks):
             self.torch_model.shape[str(r+1)].data.fill_(float(premodel.shape[str(r+1)]))
             self.torch_model.scale[str(r+1)].data.fill_(float(premodel.scale[str(r+1)]))
@@ -412,6 +412,16 @@ for i in range(NUM_CLIENTS):
     input_dim = x_tr.shape[1]
     dsm_model = DSMModel(input_dim, 3, layers=[100, 100], dist='Weibull', temp=1000., discount=1.0, random_seed=0)
     dsm_model.setup_model(t_tr, e_tr, t_val, e_val, inputdim=input_dim, lr=1e-4, optimizer='Adam', risks=1)
+    # --- New Inspection Logic ---
+    # Inspect the parameters immediately after pre-training on local data
+    print(f"  Initial parameters for Client {i} (post-pretraining):")
+    
+    shape_params = dsm_model.torch_model.shape['1'].data.cpu().numpy()
+    scale_params = dsm_model.torch_model.scale['1'].data.cpu().numpy()
+    
+    for j in range(len(shape_params)):
+        print(f"    Distribution {j+1}: Shape = {shape_params[j]:.4f}, Scale = {scale_params[j]:.4f}")
+    # --- End Inspection Logic ---
     client_models.append(dsm_model)
 
     # Store the fully prepared, persistent model object
@@ -524,6 +534,16 @@ model = client_models[0]
 
 set_parameters(model.torch_model, parameters_list)
 print("params loaded back successfully")
+
+
+global_shape_params = model.torch_model.shape['1'].data.cpu().numpy()
+global_scale_params = model.torch_model.scale['1'].data.cpu().numpy()
+
+print(f"\nFinal Aggregated Global Model Parameters (k={len(global_shape_params)}):")
+for i in range(len(global_shape_params)):
+    print(f"  Distribution {i+1}: Shape = {global_shape_params[i]:.4f}, Scale = {global_scale_params[i]:.4f}")
+
+
 model.fitted=True
 times = np.quantile(y_tr['time'][y_tr['event']==1], np.linspace(0.1, 1, 10)).tolist()
 

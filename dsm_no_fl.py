@@ -56,23 +56,22 @@ class DSMModel(dsm.DSMBase):
         self.optimizer = dsm.utilities.get_optimizer(self.torch_model, lr)
     
 
-def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elbo=True, bs=100, random_seed=0):
+def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, y_val, n_iter=10, elbo=True, bs=100, random_seed=0, patience_limit=5):
     #TODO: Implement early stopping
 
+    y_tr = pd.DataFrame({
+    'time': t_tr.cpu().numpy(),
+    'event': e_tr.cpu().numpy()
+    })
     if model.stop_training is True:
         print("early stopping criterion met. Skipping train cycle...")
         return model
     nbatches = int(x_tr.shape[0]/bs)+1
     dics = []
-    costs = []
-    valid_loss = test(model, x_val, t_val, e_val)
-    
-    valid_loss = valid_loss.detach().cpu().numpy()
-    costs.append(float(valid_loss))
-    dics.append(deepcopy(model.torch_model.state_dict()))  
+    c_indices = []
 
     patience = 0
-    oldcost = float('inf')
+    best_c_index = -float('inf')
     
     torch.manual_seed(model.random_seed)
     np.random.seed(model.random_seed)
@@ -106,34 +105,32 @@ def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, t_val, e_val, n_iter=10, elb
 
 
 
-        valid_loss = test(model, x_val, t_val, e_val)
-        valid_loss = valid_loss.detach().cpu().numpy()
-        costs.append(float(valid_loss))
+        current_c_index = evaluate_model(model, x_val, y_val, y_tr)
+        c_indices.append(current_c_index)
         dics.append(deepcopy(model.torch_model.state_dict()))
+        
+        print(f"Epoch {i+1}/{n_iter} - Validation C-Index: {current_c_index:.4f}")
 
-        print(f"costs[-1]: {costs[-1]}, oldcost: {oldcost}")
-        if costs[-1] >= oldcost:
-            if patience == 2: # or n_iter
-                print("Model did not improve on this turn.")
-                minm = np.argmin(costs)
-                model.torch_model.load_state_dict(dics[minm])
-
-                del dics
-                model.fitted = True
-                model.stop_training = True
-                return model
-            else:
-                patience += 1
+        # Check for improvement
+        if current_c_index > best_c_index:
+            best_c_index = current_c_index
+            patience = 0 # Reset patience because we found a better model
+            print(f"  New best C-Index found: {best_c_index:.4f}")
         else:
-            patience = 0
-        oldcost = costs[-1]
+            patience += 1 # No improvement
+            print(f"  No improvement in C-Index for {patience} epoch(s).")
+        
+        if patience >= patience_limit:
+            print(f"\nEarly stopping triggered after {patience} epochs with no improvement.")
+            break
 
-    minm = np.argmin(costs)
-    model.torch_model.load_state_dict(dics[minm])
+    # --- Revert to the best model found ---
+    print(f"\nTraining finished. Best Validation C-Index: {max(c_indices):.4f}")
+    best_epoch_idx = np.argmax(c_indices)
+    model.torch_model.load_state_dict(dics[best_epoch_idx])
+    print(f"Model state from epoch {best_epoch_idx + 1} loaded.")
 
     del dics
-    
-
     model.fitted = True
     return model
 
@@ -154,6 +151,47 @@ def test(model, x_te, t_te, e_te):
     print(f"Test Loss: {test_loss.item():.4f}")
 
     return test_loss
+
+
+from auton_survival.estimators import _predict_dsm
+from auton_survival.metrics import survival_regression_metric
+import numpy as np
+
+# evalutate_model made by Gemini
+def evaluate_model(model, x_eval, y_eval, y_train):
+    """
+    Evaluates the DSM model on a given dataset and returns the Concordance Index.
+
+    Parameters:
+    - model: The DSMModel object.
+    - x_eval (pd.DataFrame): Features of the evaluation set.
+    - y_eval (pd.DataFrame): Outcomes (time, event) of the evaluation set.
+    - y_train (pd.DataFrame): Outcomes of the training set, used for defining time bins.
+
+    Returns:
+    - float: The average Concordance Index.
+    """
+    # Ensure the model is in evaluation mode for predictions
+    model.torch_model.eval()
+    
+    # Define the time points for evaluation based on the training set outcomes
+    times = np.quantile(y_train['time'][y_train['event']==1], np.linspace(0.1, 0.9, 10)).tolist()
+
+    # Get model predictions
+    # Note: _predict_dsm requires the model to have .fitted = True
+    model.fitted = True 
+    predictions = _predict_dsm(model, x_eval, times)
+    
+    # Calculate Concordance Index
+    # We use np.mean() because the function returns scores for each time point
+    c_index = np.mean(survival_regression_metric('ctd', outcomes=y_eval, predictions=predictions, 
+                                                 times=times, outcomes_train=y_train))
+    
+    # Set the model back to training mode
+    model.torch_model.train()
+    
+    return c_index
+
 
 #code from Gemini to inspect gradients
 #used for debugging
@@ -313,11 +351,24 @@ def main():
     """
     #print("params before one run")
     #view_params(model.model)
+    global_shape_params = model.torch_model.shape['1'].data.cpu().numpy()
+    global_scale_params = model.torch_model.scale['1'].data.cpu().numpy()
+
+    print(f"\nFinal Aggregated Global Model Parameters (k={len(global_shape_params)}):")
+    for i in range(len(global_shape_params)):
+        print(f"  Distribution {i+1}: Shape = {global_shape_params[i]:.4f}, Scale = {global_scale_params[i]:.4f}")
+
     
 
-    train(model, x_tr_tensor, t_tr_tensor, e_tr_tensor, x_val_tensor, t_val_tensor, e_val_tensor, n_iter = 50)
+    train(model, x_tr_tensor, t_tr_tensor, e_tr_tensor, x_val, y_val, n_iter = 100)
 
-   
+    global_shape_params = model.torch_model.shape['1'].data.cpu().numpy()
+    global_scale_params = model.torch_model.scale['1'].data.cpu().numpy()
+
+    print(f"\nFinal Aggregated Global Model Parameters (k={len(global_shape_params)}):")
+    for i in range(len(global_shape_params)):
+        print(f"  Distribution {i+1}: Shape = {global_shape_params[i]:.4f}, Scale = {global_scale_params[i]:.4f}")
+
     
     test(model, x_test_tensor, t_test_tensor, e_test_tensor)
     
