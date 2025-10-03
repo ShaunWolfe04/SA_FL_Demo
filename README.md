@@ -4,6 +4,8 @@ Federated Learning in survival analysis environments
 to run: pip install -r requirements.txt
 torchvision needs a special installation
 
+## Details
+This experiment uses Deep Survival Machines (DSM), a powerful deep survival analysis model created by researchers in the Auton Lab. It then uses Federated Learning techniques to allow DSM to run in a privacy-preserving environment where data is not shared between clients, simulating how hospitals can work together to build a more powerful survival model.
 ### Run full FL experiment
 `./run_all.sh`
 - Will generate logs, plots, and full results.txt file
