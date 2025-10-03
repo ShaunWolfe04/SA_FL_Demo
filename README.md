@@ -80,10 +80,20 @@ Need to do this since the functions in SurvivalModel are monolithic
 * Status
     * Complete, needs better stopping criteria
 * Changelog
+    * 10/03/25
+        * Optimizations in experiment
     * 09/08/25
         * Can choose between SUPPORT, FRAMINGHAM, and PBC via --dataset (same as flower_dsm.py)
     * 06/25/25
         * Refactored DSMModel to inherit from DSMBase
         * Added accuracy metrics
         * Fixed bug with seemingly exploding gradients
+
+### grid_search.py:
+hyperparameter tuning for dsm_no_fl to optimize performance
+* Status
+    * Complete
+* Changelog
+    * 10/03/25
+        * Initial, with the dsm paper's hyperparameter grid
 

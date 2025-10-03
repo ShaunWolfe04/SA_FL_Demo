@@ -7,6 +7,7 @@ import scipy.integrate
 # Define trapz manually using trapezoid
 scipy.integrate.trapz = scipy.integrate.trapezoid
 
+from tqdm import tqdm
 import numpy as np
 from copy import deepcopy
 from auton_survival.datasets import load_dataset
@@ -77,7 +78,7 @@ def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, y_val, n_iter=10, elbo=True,
     np.random.seed(model.random_seed)
 
 
-    for i in range(n_iter):
+    for i in tqdm(range(n_iter)):
         x_tr, t_tr, e_tr = shuffle(x_tr, t_tr, e_tr, random_state=i)
         for j in range(nbatches):
             
@@ -109,19 +110,19 @@ def train(model: DSMModel, x_tr, t_tr, e_tr, x_val, y_val, n_iter=10, elbo=True,
         c_indices.append(current_c_index)
         dics.append(deepcopy(model.torch_model.state_dict()))
         
-        print(f"Epoch {i+1}/{n_iter} - Validation C-Index: {current_c_index:.4f}")
+        #print(f"Epoch {i+1}/{n_iter} - Validation C-Index: {current_c_index:.4f}")
 
         # Check for improvement
         if current_c_index > best_c_index:
             best_c_index = current_c_index
             patience = 0 # Reset patience because we found a better model
-            print(f"  New best C-Index found: {best_c_index:.4f}")
+            #print(f"  New best C-Index found: {best_c_index:.4f}")
         else:
             patience += 1 # No improvement
-            print(f"  No improvement in C-Index for {patience} epoch(s).")
+            #print(f"  No improvement in C-Index for {patience} epoch(s).")
         
         if patience >= patience_limit:
-            print(f"\nEarly stopping triggered after {patience} epochs with no improvement.")
+            #print(f"\nEarly stopping triggered after {patience} epochs with no improvement.")
             break
 
     # --- Revert to the best model found ---
@@ -246,6 +247,18 @@ def main():
     outcomes, features = None, None
     if args.dataset == "SUPPORT":
         outcomes, features = load_dataset(dataset=args.dataset)
+        fill_values = {
+            'alb': 3.5,
+            'pafi': 333.3,
+            'bili': 1.01,
+            'crea': 1.01,
+            'bun': 6.51,
+            'wblc': 9.0,
+            'urine': 2502.0
+        }
+
+        features.fillna(value=fill_values, inplace=True)
+
     else:
         x, t, e = load_dataset(dataset=args.dataset)
         features = pd.DataFrame(x)
@@ -274,7 +287,7 @@ def main():
         from auton_survival.preprocessing import Preprocessor
 
         # Fit the imputer and scaler to the training data and transform the training, validation and test data
-        preprocessor = Preprocessor(cat_feat_strat='ignore', num_feat_strat= 'mean') 
+        preprocessor = Preprocessor(cat_feat_strat='mode', num_feat_strat= 'mean') 
         transformer = preprocessor.fit(features, cat_feats=cat_feats, num_feats=num_feats,
                                         one_hot=True, fill_value=-1)
         x_tr = transformer.transform(x_tr)
@@ -306,15 +319,21 @@ def main():
     
     # --- Instantiate and Train the DSM Model ---
     
+    import time
 
     inputdim = x_tr.shape[-1]
     #print(f"inputdim: {inputdim}")
     #change these parameters to train the model
     # view auton_survival.models.dsm.dsm_torch.py for more info
 
-    
-    model = DSMModel( inputdim, 3, layers=[100, 100], dist='Weibull', temp=1., discount=1.0, random_seed=0)
-    model.setup_model(t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor, inputdim=inputdim, lr=2e-4, optimizer='Adam')
+    param_grid = {
+        'k': [1, 3],
+        'layers': [[100], [100, 100]],
+        'lr': [1e-3, 1e-4],
+        'discount': [1.0, 0.5] # A DSM-specific regularization parameter
+    }
+    model = DSMModel( inputdim, 6, layers=[50, 50], dist='Weibull', temp=1., discount=0.5, random_seed=0)
+    model.setup_model(t_tr_tensor, e_tr_tensor, t_val_tensor, e_val_tensor, inputdim=inputdim, lr=1e-3, optimizer='Adam')
     # DEBUG STUFF
     """
     print("\n--- DEBUG: YOUR CODE'S PRE-FLIGHT CHECK ---")
@@ -372,7 +391,7 @@ def main():
     
     test(model, x_test_tensor, t_test_tensor, e_test_tensor)
     
-    times = np.quantile(y_tr['time'][y_tr['event']==1], np.linspace(0.1, 1, 10)).tolist()
+    times = np.quantile(y_tr['time'][y_tr['event']==1], [0.25, 0.5, 0.75]).tolist()
 
     from auton_survival.estimators import _predict_dsm
     from auton_survival.metrics import survival_regression_metric
@@ -386,8 +405,19 @@ def main():
     results['Concordance Index'] = survival_regression_metric('ctd', outcomes=y_te, predictions=predictions_te, 
                                                     times=times, outcomes_train=y_tr)
     
-    print('\n'.join([f"Average {metric}: {np.mean(scores):.4f}" for metric, scores in results.items()]))
-
+    for metric, scores in results.items():
+    # Print the overall average score for the metric, as before
+        print(f"\nAverage {metric}: {np.mean(scores):.4f}")
+        
+        # Print the individual scores for each time point
+        print(f"  Breakdown by Time Point:")
+        if scores is not None and len(scores) > 0:
+            for i, score in enumerate(scores):
+                time_point = times[i]
+                quantile = (i + 1) * 25
+                print(f"    - At time {int(time_point)} ({quantile}th percentile): {score:.4f}")
+        else:
+            print("    - Scores could not be computed.")
     # from auton_survival tutorial
     from estimators_demo_utils import plot_performance_metrics
     plot_performance_metrics(results, times)

@@ -15,9 +15,10 @@ mkdir -p results
 mkdir -p plots
 
 # Clear the old results file to start fresh for this run
-> results/results.txt
+#> results/results.txt
 
 # --- SUPPORT Dataset Experiments ---
+"""
 echo "--- $(date) Running SUPPORT | IID | FedAvg ---"
 python3 flower_dsm.py --dataset SUPPORT --split iid --strategy avg > logs/support_iid_avg.log 2>&1
 
@@ -68,7 +69,7 @@ python3 flower_dsm.py --dataset FRAMINGHAM --split dirichlet --strategy prox --p
 echo "--- $(date) Running FRAMINGHAM | dirichlet | FedProx 1 ---"
 python3 flower_dsm.py --dataset FRAMINGHAM --split dirichlet --strategy prox --prox 1 > logs/framingham_dirichlet_prox1.log 2>&1
 
-
+"""
 # --- SEER Dataset Experiments ---
 echo "--- $(date) Running PBC | IID | FedAvg ---"
 python3 flower_dsm.py --dataset PBC --split iid --strategy avg > logs/seer_iid_avg.log 2>&1
